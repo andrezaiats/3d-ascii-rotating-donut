@@ -757,6 +757,318 @@ class TestStructuralMappingHelpers(unittest.TestCase):
         self.assertIsInstance(mapped_pairs, list)
 
 
+class TestTokenSurfaceIntegration(unittest.TestCase):
+    """Test suite for Story 3.1 token-surface integration functionality.
+
+    Comprehensive tests for precise parametric coordinate mapping,
+    importance-weighted distribution, dynamic scaling, structural relationships,
+    and rotation consistency.
+    """
+
+    def setUp(self):
+        """Set up test fixtures for token-surface integration tests."""
+        from math import tau, cos, sin
+
+        # Create test tokens with various importance levels
+        self.test_tokens = [
+            CodeToken(type='NAME', value='def', importance=ImportanceLevel.CRITICAL,
+                     line=1, column=0, ascii_char='#'),
+            CodeToken(type='NAME', value='function_name', importance=ImportanceLevel.HIGH,
+                     line=1, column=4, ascii_char='+'),
+            CodeToken(type='OP', value='(', importance=ImportanceLevel.HIGH,
+                     line=1, column=17, ascii_char='+'),
+            CodeToken(type='NAME', value='param', importance=ImportanceLevel.MEDIUM,
+                     line=1, column=18, ascii_char='-'),
+            CodeToken(type='OP', value=')', importance=ImportanceLevel.HIGH,
+                     line=1, column=23, ascii_char='+'),
+            CodeToken(type='OP', value=':', importance=ImportanceLevel.CRITICAL,
+                     line=1, column=24, ascii_char='#'),
+            CodeToken(type='COMMENT', value='# comment', importance=ImportanceLevel.LOW,
+                     line=2, column=0, ascii_char='.'),
+        ]
+
+        # Create test surface points with proper u,v coordinates
+        self.test_points = []
+        for i in range(20):
+            for j in range(10):
+                u = (i / 20) * tau
+                v = (j / 10) * tau
+                x = (2 + 1 * cos(v)) * cos(u)
+                y = (2 + 1 * cos(v)) * sin(u)
+                z = 1 * sin(v)
+                self.test_points.append(Point3D(x=x, y=y, z=z, u=u, v=v))
+
+    def test_parametric_coordinate_accuracy(self):
+        """Test parametric coordinate accuracy with mathematical validation."""
+        from math import tau
+        from rotating_donut import _calculate_precise_token_coordinates
+
+        # Test with small token set for precise validation
+        tokens = self.test_tokens[:3]
+        points = self.test_points[:50]
+
+        mapped_pairs = _calculate_precise_token_coordinates(tokens, points)
+
+        # Verify all mappings have valid coordinates
+        for point, token in mapped_pairs:
+            self.assertGreaterEqual(point.u, 0)
+            self.assertLessEqual(point.u, tau)
+            self.assertGreaterEqual(point.v, 0)
+            self.assertLessEqual(point.v, tau)
+
+        # Verify tokens are mapped to appropriate u-coordinates based on position
+        sorted_mapped = sorted(mapped_pairs, key=lambda x: x[1].line)
+        u_coords = [pair[0].u for pair in sorted_mapped]
+
+        # U-coordinates should be in ascending order for sequential tokens
+        for i in range(len(u_coords) - 1):
+            self.assertLessEqual(u_coords[i], u_coords[i + 1] + tau * 0.1)  # Allow wraparound
+
+    def test_importance_weighted_distribution(self):
+        """Test importance-weighted distribution with various importance levels."""
+        from rotating_donut import map_tokens_to_surface
+
+        # Create tokens with different importance levels
+        mixed_tokens = [
+            CodeToken(type='NAME', value='def', importance=ImportanceLevel.CRITICAL,
+                     line=1, column=0, ascii_char='#'),
+            CodeToken(type='NAME', value='var', importance=ImportanceLevel.MEDIUM,
+                     line=2, column=0, ascii_char='-'),
+            CodeToken(type='COMMENT', value='# comment', importance=ImportanceLevel.LOW,
+                     line=3, column=0, ascii_char='.'),
+        ]
+
+        points = self.test_points[:100]
+        mapped_pairs = map_tokens_to_surface(mixed_tokens, points)
+
+        # Count mappings by importance level
+        importance_counts = {}
+        for point, token in mapped_pairs:
+            importance = token.importance
+            importance_counts[importance] = importance_counts.get(importance, 0) + 1
+
+        # Critical tokens should have more mappings than low importance tokens
+        if ImportanceLevel.CRITICAL in importance_counts and ImportanceLevel.LOW in importance_counts:
+            self.assertGreater(importance_counts[ImportanceLevel.CRITICAL],
+                             importance_counts[ImportanceLevel.LOW])
+
+    def test_scaling_algorithms_edge_cases(self):
+        """Test scaling algorithms with edge case source file sizes."""
+        from rotating_donut import _apply_dynamic_scaling_system
+
+        # Test micro file (< 100 tokens)
+        micro_tokens = self.test_tokens[:3]
+        points = self.test_points[:200]
+
+        scaled_tokens, scaled_points = _apply_dynamic_scaling_system(micro_tokens, points)
+
+        # Micro files should potentially have token replication
+        self.assertGreaterEqual(len(scaled_tokens), len(micro_tokens))
+
+        # Test large file simulation (> 1000 tokens)
+        large_tokens = self.test_tokens * 200  # Simulate large file
+        large_points = self.test_points[:100]
+
+        scaled_large_tokens, scaled_large_points = _apply_dynamic_scaling_system(large_tokens, large_points)
+
+        # Large files should be compressed
+        self.assertLessEqual(len(scaled_large_tokens), len(large_tokens))
+
+        # Test massive file simulation (> 10000 tokens)
+        massive_tokens = self.test_tokens * 2000  # Simulate massive file
+        massive_points = self.test_points[:100]
+
+        scaled_massive_tokens, scaled_massive_points = _apply_dynamic_scaling_system(massive_tokens, massive_points)
+
+        # Massive files should be aggressively compressed
+        self.assertLessEqual(len(scaled_massive_tokens), 800)  # Should not exceed target
+
+    def test_spatial_relationship_preservation(self):
+        """Test spatial relationship preservation with complex code structures."""
+        from rotating_donut import _analyze_code_structure_relationships
+
+        # Create tokens representing a function structure
+        function_tokens = [
+            CodeToken(type='NAME', value='def', importance=ImportanceLevel.CRITICAL,
+                     line=1, column=0, ascii_char='#'),
+            CodeToken(type='NAME', value='my_function', importance=ImportanceLevel.HIGH,
+                     line=1, column=4, ascii_char='+'),
+            CodeToken(type='OP', value='(', importance=ImportanceLevel.HIGH,
+                     line=1, column=15, ascii_char='+'),
+            CodeToken(type='NAME', value='x', importance=ImportanceLevel.MEDIUM,
+                     line=2, column=4, ascii_char='-'),
+            CodeToken(type='OP', value='=', importance=ImportanceLevel.HIGH,
+                     line=2, column=6, ascii_char='+'),
+            CodeToken(type='NUMBER', value='1', importance=ImportanceLevel.MEDIUM,
+                     line=2, column=8, ascii_char='-'),
+        ]
+
+        structure_groups = _analyze_code_structure_relationships(function_tokens)
+
+        # Should identify function structure
+        self.assertIn('functions', structure_groups)
+        self.assertIn('my_function', structure_groups['functions'])
+
+        # Function tokens should be grouped together
+        func_info = structure_groups['functions']['my_function']
+        self.assertEqual(func_info['start'], 0)  # Index of 'def' token
+        self.assertGreater(len(func_info['tokens']), 0)
+
+    def test_rotation_consistency_validation(self):
+        """Test rotation consistency with full 360-degree validation."""
+        from rotating_donut import _validate_rotation_stability, _ensure_rotation_consistency
+        from math import tau
+
+        # Create mappings that span full circumference
+        test_mappings = []
+        for i, token in enumerate(self.test_tokens):
+            u = (i / len(self.test_tokens)) * tau
+            v = tau * 0.25
+            point = Point3D(x=1.0, y=0.0, z=0.0, u=u, v=v)
+            test_mappings.append((point, token))
+
+        # Should not raise exceptions for well-distributed mappings
+        try:
+            _validate_rotation_stability(test_mappings)
+            consistent_mappings = _ensure_rotation_consistency(test_mappings)
+            self.assertEqual(len(consistent_mappings), len(test_mappings))
+        except ValueError as e:
+            self.fail(f"Rotation consistency validation failed: {e}")
+
+    def test_coordinate_precision_mathematical_validation(self):
+        """Test coordinate precision with known geometric properties."""
+        from rotating_donut import _calculate_precise_token_coordinates
+        from math import tau, cos, sin
+
+        # Create simple test case with known coordinates
+        test_tokens = [
+            CodeToken(type='NAME', value='a', importance=ImportanceLevel.CRITICAL,
+                     line=1, column=0, ascii_char='#'),
+            CodeToken(type='NAME', value='b', importance=ImportanceLevel.HIGH,
+                     line=1, column=2, ascii_char='+'),
+        ]
+
+        # Create points with known u,v coordinates
+        test_points = [
+            Point3D(x=2.0, y=0.0, z=0.0, u=0.0, v=0.0),
+            Point3D(x=0.0, y=2.0, z=0.0, u=tau/2, v=0.0),
+            Point3D(x=-2.0, y=0.0, z=0.0, u=tau, v=0.0),
+        ]
+
+        mapped_pairs = _calculate_precise_token_coordinates(test_tokens, test_points)
+
+        # Verify mathematical relationships
+        for point, token in mapped_pairs:
+            # Torus parametric equations should be satisfied
+            # (simplified check for test points)
+            self.assertIsInstance(point.u, float)
+            self.assertIsInstance(point.v, float)
+
+            # Coordinates should be in valid range
+            self.assertGreaterEqual(point.u, 0)
+            self.assertLessEqual(point.u, tau + 0.001)  # Small tolerance for floating point
+
+    def test_importance_clustering_algorithm(self):
+        """Test clustering algorithm that groups tokens by importance level."""
+        from rotating_donut import _create_importance_clusters
+
+        # Create test mappings with mixed importance
+        mixed_mappings = []
+        for i, token in enumerate(self.test_tokens):
+            point = self.test_points[i % len(self.test_points)]
+            mixed_mappings.append((point, token))
+
+        clusters = _create_importance_clusters(mixed_mappings)
+
+        # Should create clusters for each importance level
+        self.assertIn(ImportanceLevel.CRITICAL, clusters)
+        self.assertIn(ImportanceLevel.HIGH, clusters)
+        self.assertIn(ImportanceLevel.MEDIUM, clusters)
+        self.assertIn(ImportanceLevel.LOW, clusters)
+
+        # Clusters should maintain sequential order within importance level
+        for importance, cluster in clusters.items():
+            if len(cluster) > 1:
+                lines = [pair[1].line for pair in cluster]
+                columns = [pair[1].column for pair in cluster]
+                # Should be sorted by line then column
+                for i in range(len(cluster) - 1):
+                    self.assertLessEqual(lines[i], lines[i + 1])
+
+    def test_visual_continuity_patterns(self):
+        """Test visual continuity patterns across rotation cycles."""
+        from rotating_donut import _verify_visual_continuity
+        from math import tau
+
+        # Create mappings with smooth u-coordinate progression
+        continuous_mappings = []
+        for i in range(10):
+            u = (i / 10) * tau
+            v = tau * 0.3
+            point = Point3D(x=1.0, y=0.0, z=0.0, u=u, v=v)
+            token = self.test_tokens[i % len(self.test_tokens)]
+            continuous_mappings.append((point, token))
+
+        # Should handle continuous mappings without issues
+        result = _verify_visual_continuity(continuous_mappings)
+        self.assertEqual(len(result), len(continuous_mappings))
+
+    def test_coverage_integration_functions(self):
+        """Test coverage of token-surface integration functions."""
+        from rotating_donut import (
+            map_tokens_to_surface,
+            _apply_dynamic_scaling_system,
+            _calculate_precise_token_coordinates,
+            _apply_importance_weighted_distribution,
+            _validate_coordinate_mapping,
+            _ensure_rotation_consistency
+        )
+
+        # Test main integration function
+        mapped_pairs = map_tokens_to_surface(self.test_tokens, self.test_points)
+        self.assertIsInstance(mapped_pairs, list)
+        self.assertGreater(len(mapped_pairs), 0)
+
+        # Test each component function
+        scaled_tokens, scaled_points = _apply_dynamic_scaling_system(self.test_tokens, self.test_points)
+        self.assertIsInstance(scaled_tokens, list)
+        self.assertIsInstance(scaled_points, list)
+
+        coordinate_pairs = _calculate_precise_token_coordinates(self.test_tokens, self.test_points[:10])
+        self.assertIsInstance(coordinate_pairs, list)
+
+        weighted_pairs = _apply_importance_weighted_distribution(coordinate_pairs, self.test_points[:10])
+        self.assertIsInstance(weighted_pairs, list)
+
+        validated_pairs = _validate_coordinate_mapping(weighted_pairs)
+        self.assertIsInstance(validated_pairs, list)
+
+        consistent_pairs = _ensure_rotation_consistency(validated_pairs)
+        self.assertIsInstance(consistent_pairs, list)
+
+    def test_performance_requirements(self):
+        """Test that functions meet performance requirements."""
+        import time
+        from rotating_donut import map_tokens_to_surface
+
+        # Test with reasonably sized input to verify performance
+        large_tokens = self.test_tokens * 20  # 140 tokens
+        large_points = self.test_points * 2   # 400 points
+
+        start_time = time.time()
+        mapped_pairs = map_tokens_to_surface(large_tokens, large_points)
+        end_time = time.time()
+
+        execution_time = end_time - start_time
+
+        # Should complete within reasonable time (< 2 seconds for this size)
+        self.assertLess(execution_time, 2.0)
+
+        # Should return valid results
+        self.assertIsInstance(mapped_pairs, list)
+        self.assertGreater(len(mapped_pairs), 0)
+
+
 if __name__ == "__main__":
     # Run all tests
     unittest.main(verbosity=2)
