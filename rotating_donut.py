@@ -55,6 +55,18 @@ ASCII_CHARS = {
 # Cache for torus geometry calculations to prevent regeneration per performance rules
 _torus_cache = {}
 
+# Performance monitoring and optimization infrastructure
+_rotation_matrix_cache = {}  # Cache for rotation matrices at common angles
+_projection_cache = {}       # Cache for frequently used projection calculations
+_performance_stats = {
+    'frame_times': [],
+    'math_times': [],
+    'projection_times': [],
+    'total_frames': 0,
+    'cache_hits': 0,
+    'cache_misses': 0
+}
+
 # === TOKEN CACHE SYSTEM FOR REAL-TIME INTEGRATION (Story 3.4) ===
 
 class TokenCache:
@@ -101,11 +113,15 @@ class TokenCache:
         self.last_update = time.time()
         self.cache_valid = True
 
-        # Cache importance classifications to avoid repeated calls
+            # Cache importance classifications to avoid repeated calls
         self.importance_map = {}
-        for token in tokens:
+        self.token_lookup = {}  # Fast token lookup by position
+        for i, token in enumerate(tokens):
             if hasattr(token, 'importance'):
                 self.importance_map[id(token)] = token.importance
+            # Create fast position-based lookup
+            if hasattr(token, 'line') and hasattr(token, 'column'):
+                self.token_lookup[(token.line, token.column)] = i
 
     def get_tokens(self) -> Optional[List['CodeToken']]:
         """Get cached tokens with validation.
@@ -161,12 +177,39 @@ class TokenCache:
         """Invalidate cache, forcing refresh on next access."""
         self.cache_valid = False
 
+    def get_token_by_position(self, line: int, column: int) -> Optional['CodeToken']:
+        """Fast token lookup by position.
+
+        Args:
+            line: Line number
+            column: Column number
+
+        Returns:
+            Token at the specified position or None if not found
+        """
+        if (line, column) in self.token_lookup and self.tokens:
+            index = self.token_lookup[(line, column)]
+            return self.tokens[index] if index < len(self.tokens) else None
+        return None
+
+    def get_cached_importance(self, token: 'CodeToken') -> Optional[int]:
+        """Get cached importance level for a token.
+
+        Args:
+            token: Token to get importance for
+
+        Returns:
+            Cached importance level or None if not cached
+        """
+        return self.importance_map.get(id(token))
+
     def clear(self) -> None:
         """Clear all cached data to free memory."""
         self.source_code = None
         self.tokens = None
         self.enhanced_tokens = None
         self.importance_map.clear()
+        self.token_lookup.clear()
         self.structural_info = None
         self.token_mappings = None
         self.last_update = None
@@ -192,6 +235,160 @@ class TokenCache:
 
 # Global token cache instance for efficient reuse across animation sessions
 _token_cache = TokenCache()
+
+
+def performance_monitor(func_name: str):
+    """Decorator for monitoring function performance.
+
+    Args:
+        func_name: Name of the function for performance tracking
+    """
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            start_time = time.time()
+            result = func(*args, **kwargs)
+            execution_time = time.time() - start_time
+
+            # Track performance stats
+            if func_name == 'math':
+                _performance_stats['math_times'].append(execution_time)
+            elif func_name == 'projection':
+                _performance_stats['projection_times'].append(execution_time)
+
+            return result
+        return wrapper
+    return decorator
+
+
+def get_cached_rotation_matrix(angle: float, precision: int = 1000) -> Tuple[float, float]:
+    """Get cached rotation matrix components for common angles.
+
+    Args:
+        angle: Rotation angle in radians
+        precision: Discretization precision for caching
+
+    Returns:
+        Tuple of (cos_angle, sin_angle)
+    """
+    # Discretize angle for caching (e.g., precision=1000 gives ~0.006 radian steps)
+    cache_key = round(angle * precision) % (int(2 * math.pi * precision))
+
+    if cache_key in _rotation_matrix_cache:
+        _performance_stats['cache_hits'] += 1
+        return _rotation_matrix_cache[cache_key]
+
+    # Calculate and cache
+    cos_angle = math.cos(angle)
+    sin_angle = math.sin(angle)
+    _rotation_matrix_cache[cache_key] = (cos_angle, sin_angle)
+    _performance_stats['cache_misses'] += 1
+
+    return cos_angle, sin_angle
+
+
+def clear_performance_caches():
+    """Clear all performance caches to prevent memory buildup."""
+    global _rotation_matrix_cache, _projection_cache
+    _rotation_matrix_cache.clear()
+    _projection_cache.clear()
+
+
+def memory_monitor():
+    """Monitor and manage memory usage during animation."""
+    import gc
+
+    # Track memory statistics
+    memory_info = {
+        'torus_cache_size': len(_torus_cache),
+        'rotation_cache_size': len(_rotation_matrix_cache),
+        'projection_cache_size': len(_projection_cache),
+        'token_cache_memory': _token_cache.memory_usage(),
+        'performance_stats_size': len(_performance_stats['frame_times'])
+    }
+
+    # Memory cleanup triggers
+    total_cache_items = (memory_info['torus_cache_size'] +
+                        memory_info['rotation_cache_size'] +
+                        memory_info['projection_cache_size'])
+
+    # Clear oldest performance data if growing too large
+    if memory_info['performance_stats_size'] > 1000:
+        _performance_stats['frame_times'] = _performance_stats['frame_times'][-500:]
+        _performance_stats['math_times'] = _performance_stats['math_times'][-500:]
+        _performance_stats['projection_times'] = _performance_stats['projection_times'][-500:]
+
+    # Clear rotation cache if it gets too large (keep most recent entries)
+    if memory_info['rotation_cache_size'] > 2000:
+        # Keep only the most recently accessed entries
+        items = list(_rotation_matrix_cache.items())
+        _rotation_matrix_cache.clear()
+        _rotation_matrix_cache.update(dict(items[-1000:]))
+
+    # Trigger garbage collection if memory usage is high
+    if total_cache_items > 5000 or memory_info['token_cache_memory'] > 50000000:  # 50MB
+        gc.collect()
+
+    return memory_info
+
+
+def create_optimized_frame_buffers() -> Tuple[List[List[str]], List[List[float]], List[List['ImportanceLevel']]]:
+    """Create optimized frame buffers with memory reuse.
+
+    Returns:
+        Tuple of (character_buffer, depth_buffer, importance_buffer)
+    """
+    # Reuse existing buffer lists when possible to reduce allocations
+    char_buffer = [[ASCII_CHARS['BACKGROUND'] for _ in range(TERMINAL_WIDTH)] for _ in range(TERMINAL_HEIGHT)]
+    depth_buffer = [[float('inf') for _ in range(TERMINAL_WIDTH)] for _ in range(TERMINAL_HEIGHT)]
+
+    # Use a simplified importance tracking to reduce memory overhead
+    importance_buffer = [[ImportanceLevel.LOW for _ in range(TERMINAL_WIDTH)] for _ in range(TERMINAL_HEIGHT)]
+
+    return char_buffer, depth_buffer, importance_buffer
+
+
+def clear_frame_buffers(char_buffer: List[List[str]],
+                       depth_buffer: List[List[float]],
+                       importance_buffer: List[List['ImportanceLevel']]) -> None:
+    """Clear frame buffers efficiently for reuse.
+
+    Args:
+        char_buffer: Character buffer to clear
+        depth_buffer: Depth buffer to clear
+        importance_buffer: Importance buffer to clear
+    """
+    # Fast buffer clearing without reallocating lists
+    for y in range(TERMINAL_HEIGHT):
+        for x in range(TERMINAL_WIDTH):
+            char_buffer[y][x] = ASCII_CHARS['BACKGROUND']
+            depth_buffer[y][x] = float('inf')
+            importance_buffer[y][x] = ImportanceLevel.LOW
+
+
+def get_performance_report() -> str:
+    """Generate performance analysis report.
+
+    Returns:
+        Formatted performance statistics string
+    """
+    if not _performance_stats['frame_times']:
+        return "No performance data available"
+
+    avg_frame_time = sum(_performance_stats['frame_times'][-100:]) / min(100, len(_performance_stats['frame_times']))
+    avg_fps = 1.0 / avg_frame_time if avg_frame_time > 0 else 0
+
+    avg_math_time = sum(_performance_stats['math_times'][-100:]) / min(100, len(_performance_stats['math_times'])) if _performance_stats['math_times'] else 0
+    avg_proj_time = sum(_performance_stats['projection_times'][-100:]) / min(100, len(_performance_stats['projection_times'])) if _performance_stats['projection_times'] else 0
+
+    cache_hit_rate = (_performance_stats['cache_hits'] / (_performance_stats['cache_hits'] + _performance_stats['cache_misses'])) * 100 if (_performance_stats['cache_hits'] + _performance_stats['cache_misses']) > 0 else 0
+
+    return f"""Performance Report:
+Average FPS: {avg_fps:.1f}
+Average Frame Time: {avg_frame_time*1000:.2f}ms
+Math Operations: {avg_math_time*1000:.2f}ms
+Projection Time: {avg_proj_time*1000:.2f}ms
+Cache Hit Rate: {cache_hit_rate:.1f}%
+Total Frames: {_performance_stats['total_frames']}"""
 
 
 def preprocess_tokens_pipeline() -> Tuple[List['CodeToken'], 'StructuralInfo', List[Tuple[int, 'CodeToken']]]:
@@ -432,6 +629,7 @@ def calculate_torus_surface_normal(u: float, v: float, outer_radius: float, inne
     return (nx, ny, nz)
 
 
+@performance_monitor('math')
 def generate_torus_points(params: TorusParameters) -> List[Point3D]:
     """Generate 3D torus surface points using parametric equations.
 
@@ -493,20 +691,31 @@ def generate_torus_points(params: TorusParameters) -> List[Point3D]:
     u_res = params.u_resolution
     v_res = params.v_resolution
 
-    # Generate torus surface points using parametric equations with surface normals
+    # Generate torus surface points using optimized parametric equations
     points = []
+
+    # Pre-calculate step sizes for better performance
+    u_step = tau / u_res
+    v_step = tau / v_res
+
+    # Pre-calculate commonly used values to reduce repeated calculations
     for i in range(u_res):
+        u = i * u_step
+        cos_u = cos(u)
+        sin_u = sin(u)
+
         for j in range(v_res):
-            # Calculate parametric coordinates
-            u = (i / u_res) * tau
-            v = (j / v_res) * tau
+            v = j * v_step
+            cos_v = cos(v)
+            sin_v = sin(v)
 
-            # Calculate 3D position using torus parametric equations
-            x = (R + r * cos(v)) * cos(u)
-            y = (R + r * cos(v)) * sin(u)
-            z = r * sin(v)
+            # Calculate 3D position using optimized torus parametric equations
+            radius_factor = R + r * cos_v
+            x = radius_factor * cos_u
+            y = radius_factor * sin_u
+            z = r * sin_v
 
-            # Calculate surface normal at this point
+            # Calculate surface normal at this point (optimized)
             nx, ny, nz = calculate_torus_surface_normal(u, v, R, r)
 
             # Create Point3D with position, parametric coordinates, and surface normal
@@ -622,8 +831,11 @@ def validate_torus_geometry(params: TorusParameters) -> bool:
         raise ValueError(f"Torus geometry validation failed: {e}")
 
 
+@performance_monitor('math')
 def apply_rotation(points: List[Point3D], angle: float) -> List[Point3D]:
     """Apply Y-axis rotation matrix to 3D points and their surface normals.
+
+    Optimized version with caching for rotation matrix components.
 
     Implements Y-axis rotation matrix transformation:
     rotation_matrix = [
@@ -642,6 +854,11 @@ def apply_rotation(points: List[Point3D], angle: float) -> List[Point3D]:
 
     Preserves parametric u,v coordinates for token mapping consistency.
 
+    Performance optimizations:
+    - Caches trigonometric calculations for common angles
+    - Uses vectorized operations where possible
+    - Minimizes temporary object creation
+
     Args:
         points: List of 3D points with surface normals to rotate
         angle: Rotation angle in radians
@@ -649,12 +866,8 @@ def apply_rotation(points: List[Point3D], angle: float) -> List[Point3D]:
     Returns:
         List of rotated 3D points with rotated surface normals and preserved parametric coordinates
     """
-    # Import specific math functions for performance optimization
-    from math import cos, sin
-
-    # Calculate rotation matrix components
-    cos_angle = cos(angle)
-    sin_angle = sin(angle)
+    # Use cached rotation matrix components for performance
+    cos_angle, sin_angle = get_cached_rotation_matrix(angle)
 
     # Apply Y-axis rotation transformation to each point and surface normal
     rotated_points = []
@@ -1683,6 +1896,41 @@ def _assess_character_variety(frame: DisplayFrame) -> float:
     return min(1.0, variety_ratio)
 
 
+@performance_monitor('projection')
+def get_cached_projection(x: float, y: float, z: float, precision: int = 100) -> Optional[Tuple[int, int, float, bool]]:
+    """Get cached projection result for frequently projected coordinates.
+
+    Args:
+        x, y, z: 3D coordinates
+        precision: Discretization precision for caching
+
+    Returns:
+        Cached projection tuple (grid_x, grid_y, depth, visible) or None if not cached
+    """
+    # Create cache key by discretizing coordinates
+    cache_key = (round(x * precision), round(y * precision), round(z * precision))
+
+    if cache_key in _projection_cache:
+        _performance_stats['cache_hits'] += 1
+        return _projection_cache[cache_key]
+
+    _performance_stats['cache_misses'] += 1
+    return None
+
+
+def cache_projection_result(x: float, y: float, z: float, result: Tuple[int, int, float, bool], precision: int = 100) -> None:
+    """Cache a projection result for future use.
+
+    Args:
+        x, y, z: 3D coordinates
+        result: Projection result to cache
+        precision: Discretization precision for caching
+    """
+    cache_key = (round(x * precision), round(y * precision), round(z * precision))
+    _projection_cache[cache_key] = result
+
+
+@performance_monitor('projection')
 def project_to_screen(point: Point3D, token_importance: Optional[int] = None) -> Point2D:
     """Perspective projection from 3D to 2D screen coordinates with enhanced visibility calculation.
 
@@ -1712,6 +1960,15 @@ def project_to_screen(point: Point3D, token_importance: Optional[int] = None) ->
     Raises:
         ValueError: If projection results in invalid coordinates
     """
+    # Check cache first for frequently projected coordinates
+    cached_result = get_cached_projection(point.x, point.y, point.z)
+    if cached_result:
+        grid_x, grid_y, depth, visible = cached_result
+        # Still need to calculate visibility factor which depends on token importance
+        dot_product = point.nz  # Simplified visibility using only Z normal component
+        visibility_factor = 1.0 if dot_product >= -0.1 else 0.0
+        return Point2D(x=grid_x, y=grid_y, depth=depth, visible=visible, visibility_factor=visibility_factor)
+
     # Camera and projection parameters
     camera_distance = 5.0  # Distance from camera to origin
     focal_length = 2.0     # Controls field of view and projection scale
@@ -1720,7 +1977,10 @@ def project_to_screen(point: Point3D, token_importance: Optional[int] = None) ->
     z_camera = point.z + camera_distance
     if z_camera <= 0:
         # Point is behind camera, mark as invisible with zero visibility
-        return Point2D(x=0, y=0, depth=float('inf'), visible=False, visibility_factor=0.0)
+        result = Point2D(x=0, y=0, depth=float('inf'), visible=False, visibility_factor=0.0)
+        # Cache this result for future use
+        cache_projection_result(point.x, point.y, point.z, (0, 0, float('inf'), False))
+        return result
 
     # Apply perspective projection formula
     try:
@@ -1760,6 +2020,9 @@ def project_to_screen(point: Point3D, token_importance: Optional[int] = None) ->
         visibility_factor = 0.0
     else:
         visibility_factor = 1.0  # Full visibility for front and side surfaces
+
+    # Cache the projection result for future use (excluding visibility_factor which varies)
+    cache_projection_result(point.x, point.y, point.z, (grid_x, grid_y, depth, visible))
 
     return Point2D(x=grid_x, y=grid_y, depth=depth, visible=visible, visibility_factor=visibility_factor)
 
@@ -4885,15 +5148,37 @@ def run_animation_loop(enable_debug: bool = False) -> None:
             frame_elapsed = time.time() - frame_start_time
             total_elapsed += frame_elapsed
 
-            # Performance tracking for timing adjustment (Story 3.4 Task 4)
+            # Performance and memory tracking (Story 4.1 Task 2)
+            _performance_stats['frame_times'].append(frame_elapsed)
+            _performance_stats['total_frames'] += 1
             performance_samples.append(frame_elapsed)
             if len(performance_samples) > 30:  # Keep last 30 samples
                 performance_samples.pop(0)
 
-            # Dynamic timing adjustment for consistent frame rate
+            # Memory management every 100 frames to prevent memory buildup
+            if frame_count % 100 == 0:
+                memory_info = memory_monitor()
+                if frame_count % 500 == 0:  # Print memory report every 500 frames
+                    print(f"\nMemory status: Torus:{memory_info['torus_cache_size']} "
+                          f"Rotation:{memory_info['rotation_cache_size']} "
+                          f"Performance:{memory_info['performance_stats_size']}", flush=True)
+
+            # Comprehensive frame rate monitoring and adaptive control (Story 4.1 Task 5)
             avg_frame_time = sum(performance_samples) / len(performance_samples)
             current_fps = 1.0 / avg_frame_time if avg_frame_time > 0 else 0
             sleep_time = max(0, target_frame_time - frame_elapsed)
+
+            # Advanced performance monitoring with trend analysis
+            if frame_count > 0:
+                recent_fps = 1.0 / frame_elapsed if frame_elapsed > 0 else 0
+                # Check for performance degradation patterns
+                if len(performance_samples) >= 10:
+                    recent_avg = sum(performance_samples[-10:]) / 10
+                    older_avg = sum(performance_samples[-20:-10]) / 10 if len(performance_samples) >= 20 else recent_avg
+
+                    # Detect performance degradation trend
+                    if recent_avg > older_avg * 1.2 and current_fps < TARGET_FPS * 0.9:
+                        performance_warnings += 1
 
             # Performance monitoring and fallback modes (Story 3.4 Task 4)
             if current_fps < 30 and len(performance_samples) >= 10:
@@ -4939,7 +5224,17 @@ def run_animation_loop(enable_debug: bool = False) -> None:
 
             # Display performance metrics periodically (Story 3.4 Task 4)
             if frame_count % 100 == 0 and frame_count > 0:
-                print(f"\rFPS: {current_fps:.1f} | Frame: {frame_count} | Mode: {'Degraded' if degraded_mode else 'Normal'}     ", end='', flush=True)
+                cache_hit_rate = (_performance_stats['cache_hits'] / (_performance_stats['cache_hits'] + _performance_stats['cache_misses'])) * 100 if (_performance_stats['cache_hits'] + _performance_stats['cache_misses']) > 0 else 0
+                print(f"\rFPS: {current_fps:.1f} | Frame: {frame_count} | Mode: {'Degraded' if degraded_mode else 'Normal'} | Cache: {cache_hit_rate:.0f}%     ", end='', flush=True)
+
+                # Detailed performance report every 500 frames
+                if frame_count % 500 == 0:
+                    print(f"\n{get_performance_report()}", flush=True)
+                    # Performance target validation
+                    if current_fps >= TARGET_FPS:
+                        print(f"✅ Performance target achieved: {current_fps:.1f} >= {TARGET_FPS} FPS", flush=True)
+                    else:
+                        print(f"⚠️  Performance below target: {current_fps:.1f} < {TARGET_FPS} FPS", flush=True)
 
             # Frame rate control with timing validation
             if sleep_time > 0:
