@@ -920,40 +920,269 @@ def map_tokens_to_surface(tokens: List[CodeToken],
                          points: List[Point3D]) -> List[Tuple[Point3D, CodeToken]]:
     """Distribute code tokens across torus surface coordinates.
 
+    Implements token-to-surface mapping with character mapping, density allocation,
+    dynamic scaling, and visual balance per Story 2.4 requirements.
+
+    Core Algorithm:
+    1. Validate inputs and handle edge cases
+    2. Calculate scaling factor based on token count vs. surface points
+    3. Apply density mapping for importance-based surface allocation
+    4. Distribute tokens across surface using parametric u,v coordinates
+    5. Ensure visual balance and rotation-aware distribution
+
+    Character Mapping (already set in tokens):
+    - CRITICAL (4): '#' - Keywords (def, class, if, for, etc.)
+    - HIGH (3): '+' - Operators (+, -, *, /, ==, etc.)
+    - MEDIUM (2): '-' - Identifiers, literals (variables, numbers, strings)
+    - LOW (1): '.' - Comments, whitespace, special characters
+
+    Density Mapping:
+    - CRITICAL tokens get 4x surface points allocation
+    - HIGH tokens get 3x surface points allocation
+    - MEDIUM tokens get 2x surface points allocation
+    - LOW tokens get 1x surface points allocation
+
     Args:
-        tokens: List of code tokens to distribute
-        points: List of torus surface points
+        tokens: List of classified code tokens with importance and ASCII chars
+        points: List of 3D torus surface points with u,v parameters
 
     Returns:
-        List of (point, token) pairs for rendering
+        List of (point, token) pairs for rendering pipeline
+
+    Raises:
+        ValueError: If inputs are invalid with actionable solution guidance
     """
-    # Placeholder implementation - will be filled in future stories
-    mapped = []
-    # TODO: Implement token-to-surface mapping
-    return mapped
+    # Input validation with proper error handling per coding standards
+    if not tokens:
+        raise ValueError(
+            "Empty token list provided for surface mapping. "
+            "Solution: Ensure source code tokenization produces valid tokens"
+        )
+
+    if not points:
+        raise ValueError(
+            "Empty surface points list provided for mapping. "
+            "Solution: Ensure torus generation produces valid 3D points"
+        )
+
+    # Handle edge case: insufficient surface points
+    if len(points) < len(tokens):
+        # Compression scenario - tokens exceed surface points
+        return _handle_token_compression(tokens, points)
+
+    # Calculate density multipliers for each importance level
+    density_map = {
+        ImportanceLevel.CRITICAL: 4,  # 4x allocation for keywords
+        ImportanceLevel.HIGH: 3,      # 3x allocation for operators
+        ImportanceLevel.MEDIUM: 2,    # 2x allocation for identifiers/literals
+        ImportanceLevel.LOW: 1        # 1x allocation for comments/whitespace
+    }
+
+    # Calculate total density requirement
+    total_density_units = sum(density_map[token.importance] for token in tokens)
+
+    # Calculate scaling factor for density mapping
+    available_points = len(points)
+    if total_density_units > available_points:
+        # Scale down density multipliers to fit available points
+        scale_factor = available_points / total_density_units
+        density_map = {level: max(1, int(mult * scale_factor))
+                      for level, mult in density_map.items()}
+
+    # Create token-to-surface mapping using sequence-based distribution
+    mapped_pairs = []
+    point_index = 0
+
+    # Sort tokens by line and column for consistent sequence distribution
+    sorted_tokens = sorted(tokens, key=lambda t: (t.line, t.column))
+
+    for token in sorted_tokens:
+        # Calculate density allocation for this token
+        density_allocation = density_map[token.importance]
+
+        # Assign multiple surface points based on importance density
+        for _ in range(density_allocation):
+            if point_index >= len(points):
+                # Reached end of available points
+                break
+
+            # Get surface point with parametric coordinates
+            surface_point = points[point_index]
+
+            # Create token-surface mapping pair
+            mapped_pairs.append((surface_point, token))
+
+            point_index += 1
+
+    # Apply visual balance distribution for aesthetic appeal
+    balanced_pairs = _apply_visual_balance(mapped_pairs, points)
+
+    return balanced_pairs
 
 
-def generate_ascii_frame(points: List[Point2D], frame_number: int = 0) -> DisplayFrame:
-    """Create ASCII character frame with depth sorting.
+def _handle_token_compression(tokens: List[CodeToken],
+                            points: List[Point3D]) -> List[Tuple[Point3D, CodeToken]]:
+    """Handle compression scenario where tokens exceed available surface points.
 
-    Implements painter's algorithm for proper depth layering:
-    1. Sort Point2D list by depth value (farthest to closest)
-    2. Render points in sorted order to DisplayFrame buffer
-    3. For each position, update depth_buffer if current point is closer
-    4. Overwrite buffer position only if depth check passes
+    Uses importance-based selection to prioritize higher importance tokens
+    when surface points are insufficient for all tokens.
 
-    Character mapping based on depth values:
-    - depth >= 0.75: '.' (background/far)
-    - depth >= 0.5:  '-' (medium-far)
-    - depth >= 0.25: '+' (medium-close)
-    - depth < 0.25:  '#' (closest/foreground)
+    Args:
+        tokens: List of tokens to compress
+        points: Limited surface points available
+
+    Returns:
+        Compressed token-surface mapping prioritizing important tokens
+    """
+    # Sort tokens by importance (highest first) and line position
+    sorted_tokens = sorted(tokens,
+                          key=lambda t: (-t.importance, t.line, t.column))
+
+    # Select top N tokens that fit available surface points
+    selected_tokens = sorted_tokens[:len(points)]
+
+    # Create direct 1:1 mapping for compression scenario
+    mapped_pairs = []
+    for i, token in enumerate(selected_tokens):
+        mapped_pairs.append((points[i], token))
+
+    return mapped_pairs
+
+
+def _apply_visual_balance(mapped_pairs: List[Tuple[Point3D, CodeToken]],
+                         all_points: List[Point3D]) -> List[Tuple[Point3D, CodeToken]]:
+    """Apply visual balance and aesthetic considerations to token distribution.
+
+    Implements rotation-aware distribution to prevent clustering of same
+    importance tokens in single areas of the torus surface.
+
+    Args:
+        mapped_pairs: Initial token-surface mappings
+        all_points: Complete surface points for reference
+
+    Returns:
+        Rebalanced token-surface mappings for optimal visual appeal
+    """
+    if not mapped_pairs:
+        return mapped_pairs
+
+    # Group mapped pairs by importance level
+    importance_groups = {}
+    for point, token in mapped_pairs:
+        importance = token.importance
+        if importance not in importance_groups:
+            importance_groups[importance] = []
+        importance_groups[importance].append((point, token))
+
+    # Redistribute each importance group across torus surface
+    rebalanced_pairs = []
+
+    for importance_level, group_pairs in importance_groups.items():
+        if not group_pairs:
+            continue
+
+        # Sort group points by parametric u coordinate for even distribution
+        sorted_group = sorted(group_pairs, key=lambda x: x[0].u)
+
+        # Calculate distribution spacing to spread tokens evenly
+        total_surface_u = 2 * math.pi  # Full parametric u range
+        group_size = len(sorted_group)
+
+        if group_size == 1:
+            # Single token - use original position
+            rebalanced_pairs.extend(sorted_group)
+        else:
+            # Multiple tokens - redistribute with spacing
+            u_spacing = total_surface_u / group_size
+
+            for i, (original_point, token) in enumerate(sorted_group):
+                # Calculate new u coordinate for even spacing
+                target_u = i * u_spacing
+
+                # Find closest surface point to target u coordinate
+                closest_point = min(all_points,
+                                  key=lambda p: abs(p.u - target_u))
+
+                rebalanced_pairs.append((closest_point, token))
+
+    return rebalanced_pairs
+
+
+def generate_ascii_frame(mapped_pairs: List[Tuple[Point3D, CodeToken]], frame_number: int = 0) -> DisplayFrame:
+    """Create ASCII character frame with token-based characters and depth sorting.
+
+    Enhanced from Story 2.4 to use token-mapped surface points with proper
+    character mapping based on token importance rather than depth-based characters.
+
+    Core Algorithm:
+    1. Project 3D points to 2D screen coordinates
+    2. Sort by depth value (farthest to closest) for painter's algorithm
+    3. Render using token's ASCII character from importance classification
+    4. Apply depth buffer for proper layering
+
+    Token Character Mapping (from token.ascii_char):
+    - CRITICAL (4): '#' - Keywords (def, class, if, for, etc.)
+    - HIGH (3): '+' - Operators (+, -, *, /, ==, etc.)
+    - MEDIUM (2): '-' - Identifiers, literals (variables, numbers, strings)
+    - LOW (1): '.' - Comments, whitespace, special characters
+
+    Args:
+        mapped_pairs: List of (Point3D, CodeToken) pairs from token mapping
+        frame_number: Current frame number for tracking
+
+    Returns:
+        Complete ASCII frame ready for terminal output with token characters
+    """
+    # Initialize 40x20 character buffer and depth buffer
+    buffer = [[ASCII_CHARS['BACKGROUND'] for _ in range(TERMINAL_WIDTH)] for _ in range(TERMINAL_HEIGHT)]
+    depth_buffer = [[float('inf') for _ in range(TERMINAL_WIDTH)] for _ in range(TERMINAL_HEIGHT)]
+
+    # Convert 3D points to 2D screen coordinates with tokens
+    screen_data = []
+    for point_3d, token in mapped_pairs:
+        point_2d = project_to_screen(point_3d)
+        if point_2d.visible:
+            screen_data.append((point_2d, token))
+
+    # Sort by depth (farthest to closest for painter's algorithm)
+    sorted_data = sorted(screen_data, key=lambda x: x[0].depth, reverse=True)
+
+    # Render points with token-based characters and depth sorting
+    for point_2d, token in sorted_data:
+        x, y = point_2d.x, point_2d.y
+
+        # Bounds check for safety
+        if 0 <= x < TERMINAL_WIDTH and 0 <= y < TERMINAL_HEIGHT:
+            # Only render if this point is closer than what's already in the buffer
+            if point_2d.depth < depth_buffer[y][x]:
+                # Use token's ASCII character from importance classification
+                char = token.ascii_char
+
+                # Update buffer and depth buffer
+                buffer[y][x] = char
+                depth_buffer[y][x] = point_2d.depth
+
+    return DisplayFrame(
+        width=TERMINAL_WIDTH,
+        height=TERMINAL_HEIGHT,
+        buffer=buffer,
+        depth_buffer=depth_buffer,
+        frame_number=frame_number
+    )
+
+
+def generate_ascii_frame_legacy(points: List[Point2D], frame_number: int = 0) -> DisplayFrame:
+    """Legacy ASCII frame generator for backward compatibility.
+
+    Original depth-based character mapping preserved for testing and fallback.
+    Use generate_ascii_frame() for token-based rendering.
 
     Args:
         points: List of 2D screen coordinates with depth information
         frame_number: Current frame number for tracking
 
     Returns:
-        Complete ASCII frame ready for terminal output
+        Complete ASCII frame with depth-based characters
     """
     # Initialize 40x20 character buffer and depth buffer
     buffer = [[ASCII_CHARS['BACKGROUND'] for _ in range(TERMINAL_WIDTH)] for _ in range(TERMINAL_HEIGHT)]
@@ -1078,6 +1307,15 @@ def run_animation_loop() -> None:
     total_elapsed = 0.0
     performance_samples = []
 
+    # Read and tokenize source code (cached per performance rules)
+    try:
+        source_code = read_self_code()
+        tokens = tokenize_code(source_code)
+    except Exception as e:
+        print(f"Error reading/tokenizing source code: {e}", flush=True)
+        print("Solution: Ensure script file is accessible and contains valid Python", flush=True)
+        return
+
     try:
         while True:
             frame_start_time = time.time()
@@ -1091,11 +1329,16 @@ def run_animation_loop() -> None:
             # Apply Y-axis rotation transformation
             rotated_points = apply_rotation(torus_points, rotation_angle)
 
-            # Project 3D points to 2D screen coordinates
-            screen_points = [project_to_screen(point) for point in rotated_points]
+            # Map tokens to rotated surface points
+            try:
+                mapped_pairs = map_tokens_to_surface(tokens, rotated_points)
+            except Exception as e:
+                print(f"Error mapping tokens to surface: {e}", flush=True)
+                print("Solution: Check token and surface point generation", flush=True)
+                break
 
-            # Generate ASCII frame with depth sorting
-            frame = generate_ascii_frame(screen_points, frame_count)
+            # Generate ASCII frame with token-based characters
+            frame = generate_ascii_frame(mapped_pairs, frame_count)
 
             # Output frame to terminal with screen clearing
             output_to_terminal(frame)

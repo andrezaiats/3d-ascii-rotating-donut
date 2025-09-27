@@ -22,9 +22,16 @@ from typing import List
 sys.path.insert(0, '..')
 from rotating_donut import (
     generate_ascii_frame,
+    generate_ascii_frame_legacy,
     output_to_terminal,
+    map_tokens_to_surface,
+    _handle_token_compression,
+    _apply_visual_balance,
     Point2D,
+    Point3D,
     DisplayFrame,
+    CodeToken,
+    ImportanceLevel,
     TERMINAL_WIDTH,
     TERMINAL_HEIGHT,
     ASCII_CHARS
@@ -37,7 +44,7 @@ class TestRenderingEngine(unittest.TestCase):
     def test_buffer_dimensions_40x20(self):
         """Test AC1: Create 40x20 character buffer for frame rendering."""
         points = []
-        frame = generate_ascii_frame(points, frame_number=1)
+        frame = generate_ascii_frame_legacy(points, frame_number=1)
 
         # Verify 40x20 dimensions
         self.assertEqual(frame.width, 40)
@@ -59,7 +66,7 @@ class TestRenderingEngine(unittest.TestCase):
             Point2D(x=10, y=10, depth=0.5, visible=True),  # Middle
         ]
 
-        frame = generate_ascii_frame(points)
+        frame = generate_ascii_frame_legacy(points)
 
         # Closest point should be rendered (painter's algorithm)
         self.assertEqual(frame.buffer[10][10], '#')  # depth 0.1 maps to '#'
@@ -81,7 +88,7 @@ class TestRenderingEngine(unittest.TestCase):
         for depth, expected_char in test_cases:
             with self.subTest(depth=depth, expected=expected_char):
                 points = [Point2D(x=5, y=5, depth=depth, visible=True)]
-                frame = generate_ascii_frame(points)
+                frame = generate_ascii_frame_legacy(points)
                 self.assertEqual(frame.buffer[5][5], expected_char)
 
     def test_terminal_safe_characters_only(self):
@@ -91,7 +98,7 @@ class TestRenderingEngine(unittest.TestCase):
         # Test with various depths across the valid range
         for depth in [0.0, 0.1, 0.3, 0.6, 0.8, 1.0]:
             points = [Point2D(x=5, y=5, depth=depth, visible=True)]
-            frame = generate_ascii_frame(points)
+            frame = generate_ascii_frame_legacy(points)
             char = frame.buffer[5][5]
             self.assertIn(char, safe_chars, f"Character '{char}' not terminal-safe")
 
@@ -167,7 +174,7 @@ class TestRenderingEngine(unittest.TestCase):
             Point2D(x=15, y=15, depth=0.2, visible=True),   # Should be rendered
         ]
 
-        frame = generate_ascii_frame(points)
+        frame = generate_ascii_frame_legacy(points)
 
         # Invisible point should not affect buffer
         self.assertEqual(frame.buffer[10][10], '.')  # Background
@@ -189,7 +196,7 @@ class TestRenderingEngine(unittest.TestCase):
 
         # Should not crash with out-of-bounds coordinates
         try:
-            frame = generate_ascii_frame(points)
+            frame = generate_ascii_frame_legacy(points)
             # Only valid point should be rendered
             self.assertEqual(frame.buffer[10][10], '#')
         except Exception as e:
@@ -217,8 +224,8 @@ class TestRenderingEngine(unittest.TestCase):
         """Test frame number tracking for debugging purposes."""
         points = [Point2D(x=5, y=5, depth=0.5, visible=True)]
 
-        frame1 = generate_ascii_frame(points, frame_number=42)
-        frame2 = generate_ascii_frame(points, frame_number=100)
+        frame1 = generate_ascii_frame_legacy(points, frame_number=42)
+        frame2 = generate_ascii_frame_legacy(points, frame_number=100)
 
         self.assertEqual(frame1.frame_number, 42)
         self.assertEqual(frame2.frame_number, 100)
@@ -240,7 +247,7 @@ class TestIntegration(unittest.TestCase):
         for j in range(5, 15):
             points.append(Point2D(x=20, y=j, depth=0.2, visible=True))
 
-        frame = generate_ascii_frame(points, frame_number=1)
+        frame = generate_ascii_frame_legacy(points, frame_number=1)
 
         # Verify cross pattern is rendered correctly
         # Horizontal line should be '+' (depth 0.3)
@@ -258,6 +265,242 @@ class TestIntegration(unittest.TestCase):
         # Test terminal output doesn't crash
         with patch('sys.stdout', new_callable=io.StringIO):
             output_to_terminal(frame)
+
+
+class TestTokenMapping(unittest.TestCase):
+    """Test suite for Story 2.4: Token-to-ASCII Character Mapping functionality."""
+
+    def setUp(self):
+        """Set up test fixtures for token mapping tests."""
+        # Create sample tokens with different importance levels
+        self.tokens = [
+            CodeToken(type='KEYWORD', value='def', importance=ImportanceLevel.CRITICAL,
+                     line=1, column=1, ascii_char='#'),
+            CodeToken(type='OPERATOR', value='+', importance=ImportanceLevel.HIGH,
+                     line=1, column=10, ascii_char='+'),
+            CodeToken(type='IDENTIFIER', value='x', importance=ImportanceLevel.MEDIUM,
+                     line=1, column=15, ascii_char='-'),
+            CodeToken(type='COMMENT', value='# comment', importance=ImportanceLevel.LOW,
+                     line=2, column=1, ascii_char='.'),
+        ]
+
+        # Create sample surface points with parametric coordinates
+        self.points = [
+            Point3D(x=1.0, y=0.0, z=0.0, u=0.0, v=0.0),
+            Point3D(x=0.0, y=1.0, z=0.0, u=1.57, v=0.0),
+            Point3D(x=-1.0, y=0.0, z=0.0, u=3.14, v=0.0),
+            Point3D(x=0.0, y=-1.0, z=0.0, u=4.71, v=0.0),
+            Point3D(x=1.0, y=0.0, z=1.0, u=0.0, v=1.57),
+            Point3D(x=0.0, y=1.0, z=1.0, u=1.57, v=1.57),
+            Point3D(x=-1.0, y=0.0, z=1.0, u=3.14, v=1.57),
+            Point3D(x=0.0, y=-1.0, z=1.0, u=4.71, v=1.57),
+        ]
+
+    def test_basic_token_to_surface_mapping(self):
+        """Test AC1: Basic token distribution across torus surface points."""
+        mapped_pairs = map_tokens_to_surface(self.tokens, self.points)
+
+        # Should return list of (Point3D, CodeToken) pairs
+        self.assertIsInstance(mapped_pairs, list)
+        self.assertTrue(len(mapped_pairs) > 0)
+
+        # Each pair should contain Point3D and CodeToken
+        for point, token in mapped_pairs:
+            self.assertIsInstance(point, Point3D)
+            self.assertIsInstance(token, CodeToken)
+
+    def test_character_mapping_preserved(self):
+        """Test AC1: Character mapping from importance levels is preserved."""
+        mapped_pairs = map_tokens_to_surface(self.tokens, self.points)
+
+        # Check that each token's ASCII character is preserved
+        token_chars = {token.ascii_char for _, token in mapped_pairs}
+        expected_chars = {'#', '+', '-', '.'}
+
+        self.assertTrue(token_chars.issubset(expected_chars))
+
+        # Verify specific importance-to-character mappings
+        for _, token in mapped_pairs:
+            if token.importance == ImportanceLevel.CRITICAL:
+                self.assertEqual(token.ascii_char, '#')
+            elif token.importance == ImportanceLevel.HIGH:
+                self.assertEqual(token.ascii_char, '+')
+            elif token.importance == ImportanceLevel.MEDIUM:
+                self.assertEqual(token.ascii_char, '-')
+            elif token.importance == ImportanceLevel.LOW:
+                self.assertEqual(token.ascii_char, '.')
+
+    def test_density_mapping_allocation(self):
+        """Test AC2: Density mapping where important tokens get more surface points."""
+        # Create minimal test case with known tokens
+        critical_token = CodeToken(type='KEYWORD', value='def', importance=ImportanceLevel.CRITICAL,
+                                 line=1, column=1, ascii_char='#')
+        low_token = CodeToken(type='COMMENT', value='# comment', importance=ImportanceLevel.LOW,
+                            line=2, column=1, ascii_char='.')
+
+        test_tokens = [critical_token, low_token]
+        mapped_pairs = map_tokens_to_surface(test_tokens, self.points)
+
+        # Count allocations for each importance level
+        critical_count = sum(1 for _, token in mapped_pairs if token.importance == ImportanceLevel.CRITICAL)
+        low_count = sum(1 for _, token in mapped_pairs if token.importance == ImportanceLevel.LOW)
+
+        # CRITICAL tokens should get more surface points than LOW tokens
+        self.assertGreater(critical_count, low_count,
+                          "Critical tokens should get more surface point allocations")
+
+    def test_scaling_behavior_with_varying_token_counts(self):
+        """Test AC4: Handle dynamic scaling for varying source code lengths."""
+        # Test case 1: Few tokens, many points (expansion)
+        few_tokens = self.tokens[:2]
+        mapped_few = map_tokens_to_surface(few_tokens, self.points)
+        self.assertTrue(len(mapped_few) > 0)
+        self.assertTrue(len(mapped_few) <= len(self.points))
+
+        # Test case 2: Many tokens, few points (compression)
+        many_tokens = self.tokens * 3  # 12 tokens
+        few_points = self.points[:4]   # 4 points
+        mapped_many = map_tokens_to_surface(many_tokens, few_points)
+        self.assertTrue(len(mapped_many) > 0)
+        self.assertTrue(len(mapped_many) <= len(few_points))
+
+    def test_visual_balance_distribution(self):
+        """Test AC5: Visual balance prevents clustering of same importance tokens."""
+        # Create multiple tokens of same importance
+        critical_tokens = [
+            CodeToken(type='KEYWORD', value='def', importance=ImportanceLevel.CRITICAL,
+                     line=1, column=1, ascii_char='#'),
+            CodeToken(type='KEYWORD', value='class', importance=ImportanceLevel.CRITICAL,
+                     line=2, column=1, ascii_char='#'),
+            CodeToken(type='KEYWORD', value='if', importance=ImportanceLevel.CRITICAL,
+                     line=3, column=1, ascii_char='#'),
+        ]
+
+        mapped_pairs = map_tokens_to_surface(critical_tokens, self.points)
+
+        # Extract u coordinates for critical tokens
+        critical_positions = [point.u for point, token in mapped_pairs
+                            if token.importance == ImportanceLevel.CRITICAL]
+
+        # Should have multiple different u positions (not clustered)
+        unique_positions = set(critical_positions)
+        self.assertGreater(len(unique_positions), 1,
+                          "Critical tokens should be distributed across different u coordinates")
+
+    def test_token_compression_handling(self):
+        """Test compression scenario where tokens exceed surface points."""
+        # Create more tokens than points
+        many_tokens = self.tokens * 3  # 12 tokens
+        few_points = self.points[:3]   # 3 points
+
+        compressed_pairs = _handle_token_compression(many_tokens, few_points)
+
+        # Should return exactly as many pairs as available points
+        self.assertEqual(len(compressed_pairs), len(few_points))
+
+        # Should prioritize higher importance tokens
+        token_importances = [token.importance for _, token in compressed_pairs]
+        # Should contain mostly high importance tokens
+        high_importance_count = sum(1 for imp in token_importances
+                                  if imp >= ImportanceLevel.HIGH)
+        self.assertGreater(high_importance_count, 0)
+
+    def test_visual_balance_application(self):
+        """Test visual balance function for aesthetic distribution."""
+        # Create initial mapping
+        initial_pairs = [(self.points[0], self.tokens[0]),
+                        (self.points[1], self.tokens[1])]
+
+        balanced_pairs = _apply_visual_balance(initial_pairs, self.points)
+
+        # Should return valid pairs
+        self.assertIsInstance(balanced_pairs, list)
+        self.assertTrue(len(balanced_pairs) > 0)
+
+        # Each pair should still be valid
+        for point, token in balanced_pairs:
+            self.assertIsInstance(point, Point3D)
+            self.assertIsInstance(token, CodeToken)
+
+    def test_input_validation_empty_tokens(self):
+        """Test error handling for empty token lists."""
+        with self.assertRaises(ValueError) as context:
+            map_tokens_to_surface([], self.points)
+
+        self.assertIn("Empty token list", str(context.exception))
+        self.assertIn("Solution:", str(context.exception))
+
+    def test_input_validation_empty_points(self):
+        """Test error handling for empty surface points."""
+        with self.assertRaises(ValueError) as context:
+            map_tokens_to_surface(self.tokens, [])
+
+        self.assertIn("Empty surface points", str(context.exception))
+        self.assertIn("Solution:", str(context.exception))
+
+    def test_sequence_based_distribution(self):
+        """Test that tokens are distributed based on their sequence in source code."""
+        # Create tokens with specific line/column positions
+        ordered_tokens = [
+            CodeToken(type='KEYWORD', value='def', importance=ImportanceLevel.CRITICAL,
+                     line=1, column=1, ascii_char='#'),
+            CodeToken(type='IDENTIFIER', value='func', importance=ImportanceLevel.MEDIUM,
+                     line=1, column=5, ascii_char='-'),
+            CodeToken(type='OPERATOR', value=':', importance=ImportanceLevel.HIGH,
+                     line=1, column=9, ascii_char='+'),
+        ]
+
+        mapped_pairs = map_tokens_to_surface(ordered_tokens, self.points)
+
+        # Should preserve some relationship to source sequence
+        self.assertTrue(len(mapped_pairs) > 0)
+
+        # All original tokens should be represented
+        mapped_values = {token.value for _, token in mapped_pairs}
+        original_values = {token.value for token in ordered_tokens}
+        self.assertTrue(original_values.issubset(mapped_values))
+
+    def test_new_ascii_frame_with_tokens(self):
+        """Test new generate_ascii_frame function with token mapping."""
+        # Create token-surface mapping
+        mapped_pairs = map_tokens_to_surface(self.tokens, self.points)
+
+        # Generate frame using new token-based function
+        frame = generate_ascii_frame(mapped_pairs, frame_number=42)
+
+        # Verify frame structure
+        self.assertEqual(frame.width, TERMINAL_WIDTH)
+        self.assertEqual(frame.height, TERMINAL_HEIGHT)
+        self.assertEqual(frame.frame_number, 42)
+
+        # Should contain token characters, not depth-based characters
+        buffer_chars = set()
+        for row in frame.buffer:
+            for char in row:
+                buffer_chars.add(char)
+
+        # Should include token ASCII characters and background
+        expected_chars = {'.', '#', '+', '-'}  # Background + token chars
+        self.assertTrue(buffer_chars.issubset(expected_chars))
+
+    def test_legacy_compatibility(self):
+        """Test that legacy generate_ascii_frame_legacy still works."""
+        # Create Point2D list for legacy function
+        points_2d = [
+            Point2D(x=10, y=10, depth=0.1, visible=True),
+            Point2D(x=15, y=15, depth=0.8, visible=True),
+        ]
+
+        # Should work with legacy function
+        frame = generate_ascii_frame_legacy(points_2d, frame_number=1)
+
+        self.assertEqual(frame.width, TERMINAL_WIDTH)
+        self.assertEqual(frame.height, TERMINAL_HEIGHT)
+        self.assertEqual(frame.frame_number, 1)
+
+        # Should use depth-based characters
+        self.assertEqual(frame.buffer[10][10], '#')  # depth 0.1
+        self.assertEqual(frame.buffer[15][15], '.')  # depth 0.8
 
 
 if __name__ == "__main__":
