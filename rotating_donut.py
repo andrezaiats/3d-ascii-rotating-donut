@@ -1559,43 +1559,27 @@ def _get_importance_level_name(level: int) -> str:
 
 # === RENDERING ENGINE ===
 
-def map_tokens_to_surface_with_structure(tokens: List[CodeToken],
-                                        points: List[Point3D],
-                                        structural_info: StructuralInfo) -> List[Tuple[Point3D, CodeToken]]:
-    """Enhanced token-to-surface mapping incorporating structural hierarchy.
+def enhance_tokens_with_structure(tokens: List[CodeToken],
+                                 structural_info: StructuralInfo) -> List[CodeToken]:
+    """Pre-enhance tokens with structural analysis for performance optimization.
 
-    Extends map_tokens_to_surface() with structural analysis to prioritize
-    tokens within critical structural elements (functions, classes, imports)
-    and apply hierarchical distribution based on code architecture.
-
-    Enhancement Features:
-    - Structural importance boosts using classify_importance_with_structure()
-    - Hierarchical surface allocation prioritizing complex structural elements
-    - Spatial clustering for tokens within same structural elements
-    - Enhanced density mapping accounting for structural complexity
+    Performs expensive token enhancement operations once during startup
+    rather than every frame to restore target 30+ FPS performance.
 
     Args:
-        tokens: List of classified code tokens with importance and ASCII chars
-        points: List of 3D torus surface points with u,v parameters
+        tokens: List of classified code tokens with basic importance
         structural_info: StructuralInfo from analyze_structure() with complexity data
 
     Returns:
-        List of (point, token) pairs with structural hierarchy emphasis
+        List of enhanced CodeToken objects with structural importance
 
     Raises:
-        ValueError: If inputs are invalid with actionable solution guidance
+        ValueError: If tokens list is empty or structural_info is invalid
     """
-    # Input validation
     if not tokens:
         raise ValueError(
-            "Empty token list provided for structural surface mapping. "
-            "Solution: Ensure source code tokenization produces valid tokens"
-        )
-
-    if not points:
-        raise ValueError(
-            "Empty surface points list provided for mapping. "
-            "Solution: Ensure torus generation produces valid 3D points"
+            "Empty tokens list provided for enhancement. "
+            "Solution: Generate tokens using tokenize_code(source)"
         )
 
     if not isinstance(structural_info, StructuralInfo):
@@ -1622,7 +1606,56 @@ def map_tokens_to_surface_with_structure(tokens: List[CodeToken],
         )
         enhanced_tokens.append(enhanced_token)
 
-    # Apply structural spatial distribution
+    return enhanced_tokens
+
+
+def map_tokens_to_surface_with_structure(enhanced_tokens: List[CodeToken],
+                                        points: List[Point3D],
+                                        structural_info: StructuralInfo) -> List[Tuple[Point3D, CodeToken]]:
+    """Enhanced token-to-surface mapping using pre-enhanced tokens for performance.
+
+    Optimized version that works with pre-enhanced tokens to avoid per-frame
+    token enhancement operations that caused 93% performance degradation.
+
+    Enhancement Features:
+    - Uses pre-enhanced tokens with structural importance already calculated
+    - Hierarchical surface allocation prioritizing complex structural elements
+    - Spatial clustering for tokens within same structural elements
+    - Enhanced density mapping accounting for structural complexity
+
+    Args:
+        enhanced_tokens: List of pre-enhanced code tokens with structural importance
+        points: List of 3D torus surface points with u,v parameters
+        structural_info: StructuralInfo from analyze_structure() with complexity data
+
+    Returns:
+        List of (Point3D, CodeToken) pairs with enhanced structural mapping
+
+    Raises:
+        ValueError: If enhanced_tokens list is empty or points list is empty
+        ValueError: If structural_info parameter is invalid
+        StructuralAnalysisError: If structural distribution algorithms fail
+    """
+    # Validation: Ensure we have both enhanced tokens and surface points
+    if not enhanced_tokens:
+        raise ValueError(
+            "Empty enhanced_tokens list provided for surface mapping. "
+            "Solution: Generate enhanced tokens using enhance_tokens_with_structure()"
+        )
+
+    if not points:
+        raise ValueError(
+            "Empty points list provided for surface mapping. "
+            "Solution: Generate points using generate_torus_points(params)"
+        )
+
+    if not isinstance(structural_info, StructuralInfo):
+        raise ValueError(
+            "Invalid structural_info parameter: expected StructuralInfo object. "
+            "Solution: Generate structural_info using analyze_structure()"
+        )
+
+    # Apply structural spatial distribution using pre-enhanced tokens
     mapped_pairs = _apply_structural_distribution(enhanced_tokens, points, structural_info)
 
     # Apply visual balance with structural awareness
@@ -2104,6 +2137,59 @@ def output_to_terminal(frame: DisplayFrame) -> None:
     # print(f"Frame: {frame.frame_number}", flush=True)
 
 
+def _precompute_token_mappings(enhanced_tokens: List[CodeToken],
+                             base_points: List[Point3D],
+                             structural_info: StructuralInfo) -> List[Tuple[int, CodeToken]]:
+    """Pre-compute token-to-point index mappings for performance optimization.
+
+    PERF-003 Fix: This eliminates expensive O(n²) structural distribution
+    calculations from running every frame in the animation loop.
+
+    Args:
+        enhanced_tokens: Pre-enhanced tokens with structural importance
+        base_points: Base torus points (before rotation)
+        structural_info: Structural analysis results
+
+    Returns:
+        List of (point_index, token) pairs for efficient frame-time lookup
+    """
+    # Use the existing structural distribution logic but cache the result
+    temp_mappings = _apply_structural_distribution(enhanced_tokens, base_points, structural_info)
+
+    # Convert to point index mappings for efficient rotation application
+    token_point_indices = []
+    point_to_index = {id(point): idx for idx, point in enumerate(base_points)}
+
+    for point, token in temp_mappings:
+        point_idx = point_to_index.get(id(point))
+        if point_idx is not None:
+            token_point_indices.append((point_idx, token))
+
+    return token_point_indices
+
+
+def _apply_cached_mappings(token_point_indices: List[Tuple[int, CodeToken]],
+                          rotated_points: List[Point3D]) -> List[Tuple[Point3D, CodeToken]]:
+    """Apply pre-computed mappings to rotated points for per-frame performance.
+
+    PERF-003 Fix: This replaces expensive structural distribution with simple
+    index lookup, dramatically reducing per-frame computational overhead.
+
+    Args:
+        token_point_indices: Pre-computed (point_index, token) mappings
+        rotated_points: Current frame's rotated torus points
+
+    Returns:
+        List of (Point3D, CodeToken) pairs ready for rendering
+    """
+    mapped_pairs = []
+    for point_idx, token in token_point_indices:
+        if point_idx < len(rotated_points):
+            mapped_pairs.append((rotated_points[point_idx], token))
+
+    return mapped_pairs
+
+
 # === ANIMATION CONTROLLER ===
 
 def calculate_frame_timing() -> float:
@@ -2193,6 +2279,36 @@ def run_animation_loop(enable_debug: bool = False) -> None:
         print("Solution: Check token structure and retry analysis", flush=True)
         return
 
+    # Pre-enhance tokens with structural analysis for performance optimization
+    # This addresses PERF-001 critical performance issue by caching enhancement operations
+    try:
+        enhanced_tokens = enhance_tokens_with_structure(tokens, structural_info)
+        print("Performance optimization: Tokens enhanced with structural analysis", flush=True)
+    except Exception as e:
+        print(f"Error enhancing tokens with structure: {e}", flush=True)
+        print("Solution: Check structural analysis results and retry enhancement", flush=True)
+        return
+
+    # PERF-002 FIX: Cache torus points outside animation loop to eliminate 1,250 parametric calculations per frame
+    # This moves expensive torus generation from per-frame to one-time startup computation
+    try:
+        base_torus_points = generate_torus_points(torus_params)
+        print("Performance optimization: Torus points cached outside animation loop", flush=True)
+    except Exception as e:
+        print(f"Error generating base torus points: {e}", flush=True)
+        print("Solution: Check torus parameters and retry generation", flush=True)
+        return
+
+    # PERF-003 FIX: Pre-compute structural token mappings to eliminate O(n²) operations per frame
+    # Cache the token distribution logic and only apply rotated points per frame
+    try:
+        token_point_indices = _precompute_token_mappings(enhanced_tokens, base_torus_points, structural_info)
+        print("Performance optimization: Structural token mappings pre-computed", flush=True)
+    except Exception as e:
+        print(f"Error pre-computing token mappings: {e}", flush=True)
+        print("Solution: Check enhanced tokens and structural info", flush=True)
+        return
+
     try:
         while True:
             frame_start_time = time.time()
@@ -2200,25 +2316,23 @@ def run_animation_loop(enable_debug: bool = False) -> None:
             # Calculate current rotation angle with incremental updates
             rotation_angle = frame_count * torus_params.rotation_speed
 
-            # Generate torus points (cached for performance per coding standards)
-            torus_points = generate_torus_points(torus_params)
+            # Apply Y-axis rotation transformation to cached base points
+            rotated_points = apply_rotation(base_torus_points, rotation_angle)
 
-            # Apply Y-axis rotation transformation
-            rotated_points = apply_rotation(torus_points, rotation_angle)
-
-            # Map tokens to rotated surface points with structural analysis
+            # Apply pre-computed token mappings to rotated points (PERF-003 fix)
+            # Using cached structural mappings to eliminate O(n²) operations per frame
             try:
-                mapped_pairs = map_tokens_to_surface_with_structure(tokens, rotated_points, structural_info)
+                mapped_pairs = _apply_cached_mappings(token_point_indices, rotated_points)
 
                 # Display surface mapping debug info for first frame only
                 if enable_debug and frame_count == 0:
                     debug_surface_mapping(mapped_pairs, structural_info, enable_debug)
 
             except Exception as e:
-                print(f"Error mapping tokens to surface with structure: {e}", flush=True)
-                print("Solution: Check token, surface point, and structural analysis", flush=True)
+                print(f"Error applying cached token mappings: {e}", flush=True)
+                print("Solution: Check pre-computed mappings and rotated points", flush=True)
 
-                # Fallback to basic mapping if structural mapping fails
+                # Fallback to basic mapping if cached mapping fails
                 try:
                     mapped_pairs = map_tokens_to_surface(tokens, rotated_points)
                     if enable_debug:

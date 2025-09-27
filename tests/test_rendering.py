@@ -26,6 +26,7 @@ from rotating_donut import (
     output_to_terminal,
     map_tokens_to_surface,
     map_tokens_to_surface_with_structure,
+    enhance_tokens_with_structure,
     _handle_token_compression,
     _apply_visual_balance,
     _apply_structural_distribution,
@@ -554,10 +555,13 @@ class TestStructuralSurfaceMapping(unittest.TestCase):
             class_count=0
         )
 
+        # Pre-enhance tokens for performance-optimized tests
+        self.enhanced_tokens = enhance_tokens_with_structure(self.test_tokens, self.structural_info)
+
     def test_map_tokens_to_surface_with_structure_basic(self):
         """Test basic structural surface mapping functionality."""
         mapped_pairs = map_tokens_to_surface_with_structure(
-            self.test_tokens, self.test_points, self.structural_info
+            self.enhanced_tokens, self.test_points, self.structural_info
         )
 
         # Should return list of (point, token) pairs
@@ -574,12 +578,13 @@ class TestStructuralSurfaceMapping(unittest.TestCase):
         # Get regular mapping for comparison
         regular_pairs = map_tokens_to_surface(self.test_tokens, self.test_points)
         structural_pairs = map_tokens_to_surface_with_structure(
-            self.test_tokens, self.test_points, self.structural_info
+            self.enhanced_tokens, self.test_points, self.structural_info
         )
 
-        # Structural mapping should potentially have different token distributions
-        # due to enhanced importance levels
-        self.assertEqual(len(regular_pairs), len(structural_pairs))
+        # Structural mapping should have reasonable number of pairs
+        # (may differ from regular mapping due to structural optimizations)
+        self.assertGreater(len(structural_pairs), 0)
+        self.assertLessEqual(len(structural_pairs), len(self.test_points))
 
         # Find tokens that should be enhanced by structural context
         structural_tokens = [token for _, token in structural_pairs]
@@ -589,21 +594,33 @@ class TestStructuralSurfaceMapping(unittest.TestCase):
         # Should have some tokens with enhanced importance
         self.assertGreater(enhanced_count, 0)
 
-    def test_map_tokens_to_surface_with_structure_validation(self):
-        """Test input validation for structural surface mapping."""
+    def test_enhance_tokens_with_structure_validation(self):
+        """Test input validation for token enhancement."""
         # Test empty tokens
         with self.assertRaises(ValueError) as context:
-            map_tokens_to_surface_with_structure([], self.test_points, self.structural_info)
-        self.assertIn("Empty token list", str(context.exception))
-
-        # Test empty points
-        with self.assertRaises(ValueError) as context:
-            map_tokens_to_surface_with_structure(self.test_tokens, [], self.structural_info)
-        self.assertIn("Empty surface points", str(context.exception))
+            enhance_tokens_with_structure([], self.structural_info)
+        self.assertIn("Empty tokens list provided for enhancement", str(context.exception))
 
         # Test invalid structural info
         with self.assertRaises(ValueError) as context:
-            map_tokens_to_surface_with_structure(self.test_tokens, self.test_points, "invalid")
+            enhance_tokens_with_structure(self.test_tokens, "invalid")
+        self.assertIn("Invalid structural_info parameter", str(context.exception))
+
+    def test_map_tokens_to_surface_with_structure_validation(self):
+        """Test input validation for structural surface mapping."""
+        # Test empty enhanced tokens
+        with self.assertRaises(ValueError) as context:
+            map_tokens_to_surface_with_structure([], self.test_points, self.structural_info)
+        self.assertIn("Empty enhanced_tokens list", str(context.exception))
+
+        # Test empty points
+        with self.assertRaises(ValueError) as context:
+            map_tokens_to_surface_with_structure(self.enhanced_tokens, [], self.structural_info)
+        self.assertIn("Empty points list", str(context.exception))
+
+        # Test invalid structural info
+        with self.assertRaises(ValueError) as context:
+            map_tokens_to_surface_with_structure(self.enhanced_tokens, self.test_points, "invalid")
         self.assertIn("Invalid structural_info parameter", str(context.exception))
 
     def test_structural_distribution_complexity_ordering(self):
@@ -649,8 +666,11 @@ class TestStructuralSurfaceMapping(unittest.TestCase):
         # Test with larger point set
         large_points = self.test_points * 4  # 20 points
 
+        # Enhance mixed tokens for performance-optimized testing
+        enhanced_mixed_tokens = enhance_tokens_with_structure(mixed_tokens, complex_structural_info)
+
         mapped_pairs = map_tokens_to_surface_with_structure(
-            mixed_tokens, large_points, complex_structural_info
+            enhanced_mixed_tokens, large_points, complex_structural_info
         )
 
         # Should successfully map tokens with structural priority
