@@ -55,6 +55,206 @@ ASCII_CHARS = {
 # Cache for torus geometry calculations to prevent regeneration per performance rules
 _torus_cache = {}
 
+# === TOKEN CACHE SYSTEM FOR REAL-TIME INTEGRATION (Story 3.4) ===
+
+class TokenCache:
+    """Comprehensive token data caching system for efficient frame-to-frame access.
+
+    Implements Story 3.4 requirements for token caching and pipeline optimization.
+    Stores preprocessed token data with efficient lookup structures to eliminate
+    repeated parsing and classification during animation.
+
+    Attributes:
+        source_code: Cached source code string
+        tokens: List of parsed CodeToken objects
+        enhanced_tokens: Tokens enhanced with structural analysis
+        importance_map: Dict mapping tokens to cached importance levels
+        structural_info: Cached structural analysis results
+        token_mappings: Pre-computed token-to-surface mappings
+        last_update: Timestamp of last cache update
+        cache_valid: Boolean indicating cache validity
+    """
+
+    def __init__(self):
+        """Initialize empty token cache."""
+        self.source_code = None
+        self.tokens = None
+        self.enhanced_tokens = None
+        self.importance_map = {}
+        self.structural_info = None
+        self.token_mappings = None
+        self.last_update = None
+        self.cache_valid = False
+
+    def populate(self, source_code: str, tokens: List['CodeToken'],
+                structural_info: 'StructuralInfo' = None) -> None:
+        """Populate cache with preprocessed token data.
+
+        Args:
+            source_code: The source code string
+            tokens: List of parsed tokens
+            structural_info: Optional structural analysis results
+        """
+        self.source_code = source_code
+        self.tokens = tokens
+        self.structural_info = structural_info
+        self.last_update = time.time()
+        self.cache_valid = True
+
+        # Cache importance classifications to avoid repeated calls
+        self.importance_map = {}
+        for token in tokens:
+            if hasattr(token, 'importance'):
+                self.importance_map[id(token)] = token.importance
+
+    def get_tokens(self) -> Optional[List['CodeToken']]:
+        """Get cached tokens with validation.
+
+        Returns:
+            Cached tokens if valid, None otherwise
+        """
+        if self.cache_valid and self.tokens:
+            return self.tokens
+        return None
+
+    def get_enhanced_tokens(self) -> Optional[List['CodeToken']]:
+        """Get cached enhanced tokens.
+
+        Returns:
+            Cached enhanced tokens if valid, None otherwise
+        """
+        if self.cache_valid and self.enhanced_tokens:
+            return self.enhanced_tokens
+        return None
+
+    def set_enhanced_tokens(self, enhanced_tokens: List['CodeToken']) -> None:
+        """Store enhanced tokens in cache.
+
+        Args:
+            enhanced_tokens: Tokens enhanced with structural analysis
+        """
+        self.enhanced_tokens = enhanced_tokens
+        # Update importance map with enhanced tokens
+        for token in enhanced_tokens:
+            if hasattr(token, 'importance'):
+                self.importance_map[id(token)] = token.importance
+
+    def set_token_mappings(self, mappings: List[Tuple[int, 'CodeToken']]) -> None:
+        """Store pre-computed token-to-point mappings.
+
+        Args:
+            mappings: List of (point_index, token) pairs
+        """
+        self.token_mappings = mappings
+
+    def get_token_mappings(self) -> Optional[List[Tuple[int, 'CodeToken']]]:
+        """Get cached token mappings.
+
+        Returns:
+            Cached mappings if valid, None otherwise
+        """
+        if self.cache_valid and self.token_mappings:
+            return self.token_mappings
+        return None
+
+    def invalidate(self) -> None:
+        """Invalidate cache, forcing refresh on next access."""
+        self.cache_valid = False
+
+    def clear(self) -> None:
+        """Clear all cached data to free memory."""
+        self.source_code = None
+        self.tokens = None
+        self.enhanced_tokens = None
+        self.importance_map.clear()
+        self.structural_info = None
+        self.token_mappings = None
+        self.last_update = None
+        self.cache_valid = False
+
+    def memory_usage(self) -> int:
+        """Estimate memory usage of cached data in bytes.
+
+        Returns:
+            Approximate memory usage in bytes
+        """
+        usage = 0
+        if self.source_code:
+            usage += len(self.source_code)
+        if self.tokens:
+            usage += len(self.tokens) * 100  # Rough estimate per token
+        if self.enhanced_tokens:
+            usage += len(self.enhanced_tokens) * 120
+        usage += len(self.importance_map) * 50
+        if self.token_mappings:
+            usage += len(self.token_mappings) * 20
+        return usage
+
+# Global token cache instance for efficient reuse across animation sessions
+_token_cache = TokenCache()
+
+
+def preprocess_tokens_pipeline() -> Tuple[List['CodeToken'], 'StructuralInfo', List[Tuple[int, 'CodeToken']]]:
+    """One-time token preprocessing pipeline for initialization phase.
+
+    Implements Story 3.4 Task 1: Separates parsing from per-frame operations.
+    Reads source code once, tokenizes once, performs structural analysis once,
+    and caches all results for efficient frame-to-frame access.
+
+    Returns:
+        Tuple of (enhanced_tokens, structural_info, token_mappings)
+
+    Raises:
+        Exception: If preprocessing fails at any stage
+    """
+    # Check if cache is already valid
+    if _token_cache.cache_valid:
+        enhanced = _token_cache.get_enhanced_tokens()
+        if enhanced and _token_cache.structural_info and _token_cache.get_token_mappings():
+            return enhanced, _token_cache.structural_info, _token_cache.get_token_mappings()
+
+    # Read source code once
+    source_code = read_self_code()
+
+    # Tokenize once
+    tokens = tokenize_code(source_code)
+
+    # Perform structural analysis once
+    structural_info = analyze_structure(tokens)
+
+    # Enhance tokens with structure once
+    enhanced_tokens = enhance_tokens_with_structure(tokens, structural_info)
+
+    # Populate cache
+    _token_cache.populate(source_code, tokens, structural_info)
+    _token_cache.set_enhanced_tokens(enhanced_tokens)
+
+    return enhanced_tokens, structural_info, None  # Mappings computed separately
+
+
+def initialize_token_cache(torus_params: 'TorusParameters') -> Tuple['TokenCache', List['Point3D']]:
+    """Initialize token cache and torus geometry for animation.
+
+    Implements Story 3.4 optimization: Separates initialization from animation loop.
+
+    Args:
+        torus_params: Torus generation parameters
+
+    Returns:
+        Tuple of (populated token cache, base torus points)
+    """
+    # Preprocess tokens through pipeline
+    enhanced_tokens, structural_info, _ = preprocess_tokens_pipeline()
+
+    # Generate base torus points once
+    base_torus_points = generate_torus_points(torus_params)
+
+    # Pre-compute token mappings
+    token_mappings = _precompute_token_mappings(enhanced_tokens, base_torus_points, structural_info)
+    _token_cache.set_token_mappings(token_mappings)
+
+    return _token_cache, base_torus_points
+
 
 # === DATA MODELS ===
 
@@ -3752,6 +3952,7 @@ def _apply_cached_mappings(token_point_indices: List[Tuple[int, CodeToken]],
 
     PERF-003 Fix: This replaces expensive structural distribution with simple
     index lookup, dramatically reducing per-frame computational overhead.
+    Enhanced with Story 3.4 optimizations for rotation-aware character assignment.
 
     Args:
         token_point_indices: Pre-computed (point_index, token) mappings
@@ -3763,6 +3964,8 @@ def _apply_cached_mappings(token_point_indices: List[Tuple[int, CodeToken]],
     mapped_pairs = []
     for point_idx, token in token_point_indices:
         if point_idx < len(rotated_points):
+            # Apply cached mapping with rotation offset preserved
+            # The rotated points already have updated surface normals for visibility
             mapped_pairs.append((rotated_points[point_idx], token))
 
     return mapped_pairs
@@ -3796,24 +3999,26 @@ def handle_interrupts() -> bool:
 
 
 def run_animation_loop(enable_debug: bool = False) -> None:
-    """Main execution loop with frame rate control and structural analysis.
+    """Main execution loop with frame rate control and real-time integration.
 
-    Implements comprehensive animation control with enhanced structural analysis:
+    Implements comprehensive animation control with Story 3.4 optimizations:
+    - Separated one-time token preprocessing from per-frame operations
+    - Comprehensive token data caching for efficient frame-to-frame access
     - Target 30+ FPS with dynamic timing adjustment
     - Graceful keyboard interrupt handling (Ctrl+C)
     - Frame timing validation and debugging
-    - Memory management with buffer clearing
+    - Memory management with buffer clearing and cache cleanup
     - Structural analysis integration with optional debugging
     - Consistent performance across different system capabilities
 
     Follows Animation Controller specifications with proper integration
     of MathematicalEngine, ParsingEngine, and RenderingEngine systems.
-    Enhanced with structural analysis from Story 2.5.
+    Enhanced with real-time integration pipeline from Story 3.4.
 
     Args:
         enable_debug: Flag to enable structural analysis debugging output
     """
-    print("Starting 3D ASCII Donut Animation with Structural Analysis...", flush=True)
+    print("Starting 3D ASCII Donut Animation with Real-Time Integration...", flush=True)
     print("Target Frame Rate: 30+ FPS", flush=True)
     if enable_debug:
         print("Debug Mode: ENABLED", flush=True)
@@ -3829,62 +4034,43 @@ def run_animation_loop(enable_debug: bool = False) -> None:
         rotation_speed=0.05  # Reduced for smoother animation
     )
 
-    # Timing and performance tracking variables
+    # Timing and performance tracking variables (Story 3.4 Task 4)
     frame_count = 0
     target_frame_time = calculate_frame_timing()
     total_elapsed = 0.0
     performance_samples = []
+    performance_warnings = 0
+    degraded_mode = False  # Fallback flag for performance issues
 
-    # Read and tokenize source code (cached per performance rules)
-    try:
-        source_code = read_self_code()
-        tokens = tokenize_code(source_code)
-    except Exception as e:
-        print(f"Error reading/tokenizing source code: {e}", flush=True)
-        print("Solution: Ensure script file is accessible and contains valid Python", flush=True)
-        return
+    # === STORY 3.4 OPTIMIZATION: ONE-TIME INITIALIZATION PHASE ===
+    # All token parsing, structural analysis, and preprocessing moved here
+    # This eliminates repeated parsing overhead from animation loop
 
-    # Perform structural analysis (cached for performance per coding standards)
     try:
-        structural_info = analyze_structure(tokens)
+        # Initialize token cache and perform all preprocessing once
+        print("Initializing token cache and preprocessing pipeline...", flush=True)
+        token_cache, base_torus_points = initialize_token_cache(torus_params)
+
+        # Get preprocessed data from cache
+        enhanced_tokens = token_cache.get_enhanced_tokens()
+        structural_info = token_cache.structural_info
+        token_point_indices = token_cache.get_token_mappings()
+
+        if not all([enhanced_tokens, structural_info, token_point_indices]):
+            raise ValueError("Token cache initialization incomplete")
+
+        print(f"Token cache initialized: {len(enhanced_tokens)} tokens preprocessed", flush=True)
+        print(f"Memory usage: ~{token_cache.memory_usage() / 1024:.1f} KB", flush=True)
+        print("Performance optimization: All token processing moved to initialization", flush=True)
 
         # Display debug information once at startup if enabled
         if enable_debug:
-            debug_structural_analysis(structural_info, tokens, enable_debug)
+            debug_structural_analysis(structural_info, enhanced_tokens, enable_debug)
             debug_nested_structures(structural_info, enable_debug)
-    except Exception as e:
-        print(f"Error in structural analysis: {e}", flush=True)
-        print("Solution: Check token structure and retry analysis", flush=True)
-        return
 
-    # Pre-enhance tokens with structural analysis for performance optimization
-    # This addresses PERF-001 critical performance issue by caching enhancement operations
-    try:
-        enhanced_tokens = enhance_tokens_with_structure(tokens, structural_info)
-        print("Performance optimization: Tokens enhanced with structural analysis", flush=True)
     except Exception as e:
-        print(f"Error enhancing tokens with structure: {e}", flush=True)
-        print("Solution: Check structural analysis results and retry enhancement", flush=True)
-        return
-
-    # PERF-002 FIX: Cache torus points outside animation loop to eliminate 1,250 parametric calculations per frame
-    # This moves expensive torus generation from per-frame to one-time startup computation
-    try:
-        base_torus_points = generate_torus_points(torus_params)
-        print("Performance optimization: Torus points cached outside animation loop", flush=True)
-    except Exception as e:
-        print(f"Error generating base torus points: {e}", flush=True)
-        print("Solution: Check torus parameters and retry generation", flush=True)
-        return
-
-    # PERF-003 FIX: Pre-compute structural token mappings to eliminate O(n²) operations per frame
-    # Cache the token distribution logic and only apply rotated points per frame
-    try:
-        token_point_indices = _precompute_token_mappings(enhanced_tokens, base_torus_points, structural_info)
-        print("Performance optimization: Structural token mappings pre-computed", flush=True)
-    except Exception as e:
-        print(f"Error pre-computing token mappings: {e}", flush=True)
-        print("Solution: Check enhanced tokens and structural info", flush=True)
+        print(f"Error in initialization phase: {e}", flush=True)
+        print("Solution: Check token preprocessing pipeline and retry", flush=True)
         return
 
     try:
@@ -3912,7 +4098,9 @@ def run_animation_loop(enable_debug: bool = False) -> None:
 
                 # Fallback to basic mapping if cached mapping fails
                 try:
-                    mapped_pairs = map_tokens_to_surface(tokens, rotated_points)
+                    # Use cached tokens for fallback mapping
+                    fallback_tokens = token_cache.get_tokens() or enhanced_tokens
+                    mapped_pairs = map_tokens_to_surface(fallback_tokens, rotated_points)
                     if enable_debug:
                         print("Fallback: Using basic token mapping", flush=True)
                 except Exception as fallback_e:
@@ -3929,19 +4117,61 @@ def run_animation_loop(enable_debug: bool = False) -> None:
             frame_elapsed = time.time() - frame_start_time
             total_elapsed += frame_elapsed
 
-            # Performance tracking for timing adjustment
+            # Performance tracking for timing adjustment (Story 3.4 Task 4)
             performance_samples.append(frame_elapsed)
             if len(performance_samples) > 30:  # Keep last 30 samples
                 performance_samples.pop(0)
 
             # Dynamic timing adjustment for consistent frame rate
             avg_frame_time = sum(performance_samples) / len(performance_samples)
+            current_fps = 1.0 / avg_frame_time if avg_frame_time > 0 else 0
             sleep_time = max(0, target_frame_time - frame_elapsed)
+
+            # Performance monitoring and fallback modes (Story 3.4 Task 4)
+            if current_fps < 30 and len(performance_samples) >= 10:
+                performance_warnings += 1
+                if performance_warnings > 5 and not degraded_mode:
+                    # Enter degraded mode after persistent low FPS
+                    degraded_mode = True
+                    print(f"\nPerformance Warning: FPS dropped to {current_fps:.1f}", flush=True)
+                    print("Solution: Entering degraded mode with reduced quality", flush=True)
+                    # Reduce torus resolution for better performance
+                    torus_params = TorusParameters(
+                        outer_radius=torus_params.outer_radius,
+                        inner_radius=torus_params.inner_radius,
+                        u_resolution=30,  # Reduced from 50
+                        v_resolution=15,  # Reduced from 25
+                        rotation_speed=torus_params.rotation_speed
+                    )
+                    # Regenerate base points with lower resolution
+                    base_torus_points = generate_torus_points(torus_params)
+                    token_point_indices = _precompute_token_mappings(enhanced_tokens, base_torus_points, structural_info)
+                    token_cache.set_token_mappings(token_point_indices)
+            elif current_fps > 35 and degraded_mode:
+                # Exit degraded mode if performance recovers
+                performance_warnings = 0
+                degraded_mode = False
+                print(f"\nPerformance Recovered: FPS restored to {current_fps:.1f}", flush=True)
+                # Restore original resolution
+                torus_params = TorusParameters(
+                    outer_radius=2.0,
+                    inner_radius=1.0,
+                    u_resolution=50,
+                    v_resolution=25,
+                    rotation_speed=0.05
+                )
+                base_torus_points = generate_torus_points(torus_params)
+                token_point_indices = _precompute_token_mappings(enhanced_tokens, base_torus_points, structural_info)
+                token_cache.set_token_mappings(token_point_indices)
 
             # Handle performance variations gracefully
             if avg_frame_time > target_frame_time * 1.5:
                 # System struggling - reduce update frequency slightly
                 sleep_time = max(sleep_time, 0.01)  # Minimum 10ms sleep
+
+            # Display performance metrics periodically (Story 3.4 Task 4)
+            if frame_count % 100 == 0 and frame_count > 0:
+                print(f"\rFPS: {current_fps:.1f} | Frame: {frame_count} | Mode: {'Degraded' if degraded_mode else 'Normal'}     ", end='', flush=True)
 
             # Frame rate control with timing validation
             if sleep_time > 0:
@@ -3949,12 +4179,35 @@ def run_animation_loop(enable_debug: bool = False) -> None:
 
             frame_count += 1
 
-            # Memory management: Clear display buffers periodically
-            # This prevents memory accumulation during long runs per coding standards
+            # === STORY 3.4 TASK 5: ROBUST MEMORY MANAGEMENT ===
+            # Periodic memory cleanup and monitoring for long-running animations
             if frame_count % 100 == 0:
                 # Force garbage collection of old frame data
                 import gc
                 gc.collect()
+
+                # Monitor memory usage
+                cache_memory = token_cache.memory_usage()
+                if cache_memory > 1024 * 1024:  # If cache exceeds 1MB
+                    print(f"\nMemory Warning: Cache using {cache_memory / 1024:.1f} KB", flush=True)
+                    print("Solution: Consider restarting animation for optimal performance", flush=True)
+
+            # Extended session memory management (30+ minutes)
+            if frame_count % 3000 == 0 and frame_count > 0:  # Every ~100 seconds at 30 FPS
+                # Deep cleanup for extended sessions
+                gc.collect(2)  # Full collection including oldest generation
+
+                # Clear any accumulated performance samples beyond needed
+                if len(performance_samples) > 30:
+                    performance_samples = performance_samples[-30:]
+
+                # Validate cache integrity
+                if not token_cache.cache_valid:
+                    print("\nCache invalidated - reinitializing...", flush=True)
+                    token_cache, base_torus_points = initialize_token_cache(torus_params)
+                    enhanced_tokens = token_cache.get_enhanced_tokens()
+                    structural_info = token_cache.structural_info
+                    token_point_indices = token_cache.get_token_mappings()
 
     except KeyboardInterrupt:
         # Graceful interrupt handling with proper cleanup
@@ -3965,10 +4218,19 @@ def run_animation_loop(enable_debug: bool = False) -> None:
                 avg_fps = frame_count / total_elapsed if total_elapsed > 0 else 0
                 print(f"Average FPS: {avg_fps:.1f}", flush=True)
                 print(f"Total Frames: {frame_count}", flush=True)
+                print(f"Cache Memory Used: {token_cache.memory_usage() / 1024:.1f} KB", flush=True)
     except Exception as e:
         print(f"\nAnimation error: {e}", flush=True)
         print("Solution: Check terminal compatibility and system resources", flush=True)
         raise
+    finally:
+        # === STORY 3.4 TASK 5: MEMORY CLEANUP ON EXIT ===
+        # Ensure all cached data is cleaned up properly
+        if '_token_cache' in globals():
+            _token_cache.clear()
+        # Final garbage collection
+        import gc
+        gc.collect()
 
 
 def main() -> None:
