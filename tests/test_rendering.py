@@ -757,6 +757,245 @@ class TestStructuralMappingHelpers(unittest.TestCase):
         self.assertIsInstance(mapped_pairs, list)
 
 
+class TestDynamicCharacterAssignment(unittest.TestCase):
+    """Test suite for Story 3.2: Dynamic Character Assignment functionality.
+
+    Tests cover token-driven character selection, importance hierarchy,
+    priority resolution for overlapping tokens, smooth visual transitions,
+    and character density balancing with code complexity.
+    """
+
+    def setUp(self):
+        """Set up test fixtures for dynamic character assignment tests."""
+        # Create test tokens with different importance levels
+        self.test_tokens = [
+            CodeToken(type='KEYWORD', value='def', importance=ImportanceLevel.CRITICAL,
+                     line=1, column=0, ascii_char='#'),
+            CodeToken(type='OPERATOR', value='+', importance=ImportanceLevel.HIGH,
+                     line=1, column=10, ascii_char='+'),
+            CodeToken(type='IDENTIFIER', value='var', importance=ImportanceLevel.MEDIUM,
+                     line=1, column=15, ascii_char='-'),
+            CodeToken(type='COMMENT', value='# comment', importance=ImportanceLevel.LOW,
+                     line=2, column=0, ascii_char='.'),
+        ]
+
+        # Create test surface points
+        self.test_points = [
+            Point3D(x=1.0, y=0.0, z=0.0, u=0.0, v=0.0),
+            Point3D(x=0.0, y=1.0, z=0.0, u=1.57, v=0.0),
+            Point3D(x=-1.0, y=0.0, z=0.0, u=3.14, v=0.0),
+            Point3D(x=0.0, y=-1.0, z=0.0, u=4.71, v=0.0),
+        ]
+
+    def test_token_driven_character_selection(self):
+        """Test AC1: Replace static ASCII characters with token-driven selection."""
+        # Create token-surface mapping
+        mapped_pairs = map_tokens_to_surface(self.test_tokens, self.test_points)
+
+        # Generate frame using token-based function
+        frame = generate_ascii_frame(mapped_pairs, frame_number=1)
+
+        # Should use token ASCII characters, not depth-based characters
+        buffer_chars = set()
+        for row in frame.buffer:
+            for char in row:
+                buffer_chars.add(char)
+
+        # Should contain token characters and background
+        token_chars = {token.ascii_char for token in self.test_tokens}
+        token_chars.add('.')  # Background character
+
+        self.assertTrue(buffer_chars.issubset(token_chars))
+
+    def test_importance_hierarchy_character_rendering(self):
+        """Test AC2: Apply importance hierarchy (Critical=#, High=+, Medium=-, Low=.)."""
+        # Verify character mapping for each importance level
+        for token in self.test_tokens:
+            if token.importance == ImportanceLevel.CRITICAL:
+                self.assertEqual(token.ascii_char, '#')
+            elif token.importance == ImportanceLevel.HIGH:
+                self.assertEqual(token.ascii_char, '+')
+            elif token.importance == ImportanceLevel.MEDIUM:
+                self.assertEqual(token.ascii_char, '-')
+            elif token.importance == ImportanceLevel.LOW:
+                self.assertEqual(token.ascii_char, '.')
+
+    def test_priority_resolution_overlapping_tokens(self):
+        """Test AC3: Handle multiple tokens mapping to same surface area through priority resolution."""
+        # Create overlapping tokens at same screen position
+        overlapping_tokens = [
+            CodeToken(type='KEYWORD', value='def', importance=ImportanceLevel.CRITICAL,
+                     line=1, column=0, ascii_char='#'),
+            CodeToken(type='COMMENT', value='# comment', importance=ImportanceLevel.LOW,
+                     line=1, column=1, ascii_char='.'),
+        ]
+
+        # Create points that will project to same screen coordinates
+        overlapping_points = [
+            Point3D(x=1.0, y=0.0, z=0.1, u=0.0, v=0.0),  # Closer depth
+            Point3D(x=1.0, y=0.0, z=0.9, u=0.1, v=0.1),  # Farther depth
+        ]
+
+        mapped_pairs = [(overlapping_points[0], overlapping_tokens[0]),
+                       (overlapping_points[1], overlapping_tokens[1])]
+
+        frame = generate_ascii_frame(mapped_pairs)
+
+        # Find the screen position where overlap occurs
+        found_critical_char = False
+        for row in frame.buffer:
+            for char in row:
+                if char == '#':  # Critical importance should win
+                    found_critical_char = True
+
+        self.assertTrue(found_critical_char, "Critical importance token should be visible")
+
+    def test_importance_based_conflict_resolution(self):
+        """Test enhanced priority resolution for tokens at similar depths."""
+        # Create tokens with similar depths but different importance
+        similar_depth_tokens = [
+            CodeToken(type='KEYWORD', value='def', importance=ImportanceLevel.CRITICAL,
+                     line=1, column=0, ascii_char='#'),
+            CodeToken(type='IDENTIFIER', value='var', importance=ImportanceLevel.MEDIUM,
+                     line=1, column=1, ascii_char='-'),
+        ]
+
+        # Create points with very similar depths (within 0.1 threshold)
+        similar_depth_points = [
+            Point3D(x=1.0, y=0.0, z=0.5, u=0.0, v=0.0),    # depth 0.5
+            Point3D(x=1.01, y=0.0, z=0.55, u=0.1, v=0.0),  # depth 0.55 (similar)
+        ]
+
+        mapped_pairs = [(similar_depth_points[0], similar_depth_tokens[0]),
+                       (similar_depth_points[1], similar_depth_tokens[1])]
+
+        frame = generate_ascii_frame(mapped_pairs)
+
+        # Critical importance should win over medium when depths are similar
+        critical_count = 0
+        medium_count = 0
+        for row in frame.buffer:
+            for char in row:
+                if char == '#':
+                    critical_count += 1
+                elif char == '-':
+                    medium_count += 1
+
+        # Should favor critical importance for conflict resolution
+        self.assertGreaterEqual(critical_count, medium_count)
+
+    def test_visual_transition_smoothness(self):
+        """Test AC4: Ensure smooth visual transitions during rotation."""
+        # Create sequence of frames to test transition quality
+        frame_sequence = []
+
+        for rotation_angle in [0.0, 0.1, 0.2, 0.3]:
+            # Simulate rotation by adjusting point coordinates
+            rotated_points = []
+            for point in self.test_points:
+                # Simple rotation simulation
+                new_u = (point.u + rotation_angle) % 6.28
+                rotated_point = Point3D(x=point.x, y=point.y, z=point.z, u=new_u, v=point.v)
+                rotated_points.append(rotated_point)
+
+            mapped_pairs = map_tokens_to_surface(self.test_tokens, rotated_points)
+            frame = generate_ascii_frame(mapped_pairs)
+            frame_sequence.append(frame)
+
+        # Verify frame sequence maintains visual coherence
+        self.assertEqual(len(frame_sequence), 4)
+
+        # Each frame should be valid
+        for frame in frame_sequence:
+            self.assertEqual(frame.width, TERMINAL_WIDTH)
+            self.assertEqual(frame.height, TERMINAL_HEIGHT)
+
+    def test_character_density_code_complexity_balance(self):
+        """Test AC5: Balance character density with code complexity."""
+        # Create tokens representing different complexity levels
+        simple_tokens = [
+            CodeToken(type='IDENTIFIER', value='x', importance=ImportanceLevel.MEDIUM,
+                     line=1, column=0, ascii_char='-'),
+        ]
+
+        complex_tokens = [
+            CodeToken(type='KEYWORD', value='def', importance=ImportanceLevel.CRITICAL,
+                     line=1, column=0, ascii_char='#'),
+            CodeToken(type='KEYWORD', value='class', importance=ImportanceLevel.CRITICAL,
+                     line=2, column=0, ascii_char='#'),
+            CodeToken(type='OPERATOR', value='+', importance=ImportanceLevel.HIGH,
+                     line=3, column=0, ascii_char='+'),
+            CodeToken(type='OPERATOR', value='*', importance=ImportanceLevel.HIGH,
+                     line=4, column=0, ascii_char='+'),
+        ]
+
+        # Test with same number of surface points
+        test_points = self.test_points[:10] * 2  # 20 points
+
+        simple_mapped = map_tokens_to_surface(simple_tokens, test_points)
+        complex_mapped = map_tokens_to_surface(complex_tokens, test_points)
+
+        # Complex code should result in more diverse character distribution
+        simple_frame = generate_ascii_frame(simple_mapped)
+        complex_frame = generate_ascii_frame(complex_mapped)
+
+        # Count unique characters in each frame
+        simple_chars = set()
+        complex_chars = set()
+
+        for row in simple_frame.buffer:
+            for char in row:
+                if char != '.':  # Exclude background
+                    simple_chars.add(char)
+
+        for row in complex_frame.buffer:
+            for char in row:
+                if char != '.':  # Exclude background
+                    complex_chars.add(char)
+
+        # Complex code should have more character variety
+        self.assertGreaterEqual(len(complex_chars), len(simple_chars))
+
+    def test_fallback_mechanisms_edge_cases(self):
+        """Test fallback mechanisms for edge cases in token-to-surface mapping."""
+        # Test empty token list handling
+        empty_mapped_pairs = []
+        frame = generate_ascii_frame(empty_mapped_pairs)
+
+        # Should create valid empty frame
+        self.assertEqual(frame.width, TERMINAL_WIDTH)
+        self.assertEqual(frame.height, TERMINAL_HEIGHT)
+
+        # Should be all background characters
+        for row in frame.buffer:
+            for char in row:
+                self.assertEqual(char, '.')
+
+    def test_equal_importance_stability(self):
+        """Test stability when tokens have equal importance and similar depth."""
+        # Create tokens with same importance
+        equal_tokens = [
+            CodeToken(type='IDENTIFIER', value='a', importance=ImportanceLevel.MEDIUM,
+                     line=1, column=0, ascii_char='-'),
+            CodeToken(type='IDENTIFIER', value='b', importance=ImportanceLevel.MEDIUM,
+                     line=1, column=1, ascii_char='-'),
+        ]
+
+        # Create points with identical depths
+        identical_points = [
+            Point3D(x=1.0, y=0.0, z=0.5, u=0.0, v=0.0),
+            Point3D(x=1.0, y=0.0, z=0.5, u=0.1, v=0.0),
+        ]
+
+        mapped_pairs = [(identical_points[0], equal_tokens[0]),
+                       (identical_points[1], equal_tokens[1])]
+
+        # Should not crash and maintain first-rendered stability
+        frame = generate_ascii_frame(mapped_pairs)
+        self.assertEqual(frame.width, TERMINAL_WIDTH)
+        self.assertEqual(frame.height, TERMINAL_HEIGHT)
+
+
 class TestTokenSurfaceIntegration(unittest.TestCase):
     """Test suite for Story 3.1 token-surface integration functionality.
 

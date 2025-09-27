@@ -3133,6 +3133,8 @@ def generate_ascii_frame(mapped_pairs: List[Tuple[Point3D, CodeToken]], frame_nu
     # Initialize 40x20 character buffer and depth buffer
     buffer = [[ASCII_CHARS['BACKGROUND'] for _ in range(TERMINAL_WIDTH)] for _ in range(TERMINAL_HEIGHT)]
     depth_buffer = [[float('inf') for _ in range(TERMINAL_WIDTH)] for _ in range(TERMINAL_HEIGHT)]
+    # Add importance buffer for priority resolution when depths are similar
+    importance_buffer = [[ImportanceLevel.LOW for _ in range(TERMINAL_WIDTH)] for _ in range(TERMINAL_HEIGHT)]
 
     # Convert 3D points to 2D screen coordinates with tokens
     screen_data = []
@@ -3144,20 +3146,37 @@ def generate_ascii_frame(mapped_pairs: List[Tuple[Point3D, CodeToken]], frame_nu
     # Sort by depth (farthest to closest for painter's algorithm)
     sorted_data = sorted(screen_data, key=lambda x: x[0].depth, reverse=True)
 
-    # Render points with token-based characters and depth sorting
+    # Render points with enhanced priority resolution
     for point_2d, token in sorted_data:
         x, y = point_2d.x, point_2d.y
 
         # Bounds check for safety
         if 0 <= x < TERMINAL_WIDTH and 0 <= y < TERMINAL_HEIGHT:
-            # Only render if this point is closer than what's already in the buffer
-            if point_2d.depth < depth_buffer[y][x]:
+            current_depth = depth_buffer[y][x]
+            current_importance = importance_buffer[y][x]
+
+            # Enhanced priority resolution: depth-first, then importance-based
+            should_render = False
+
+            if point_2d.depth < current_depth:
+                # Closer point takes priority
+                should_render = True
+            elif abs(point_2d.depth - current_depth) < 0.1:
+                # Similar depth - use importance hierarchy for conflict resolution
+                if token.importance > current_importance:
+                    should_render = True
+                elif token.importance == current_importance:
+                    # Equal importance - maintain stability by keeping first rendered
+                    should_render = False
+
+            if should_render:
                 # Use token's ASCII character from importance classification
                 char = token.ascii_char
 
-                # Update buffer and depth buffer
+                # Update all buffers for comprehensive priority tracking
                 buffer[y][x] = char
                 depth_buffer[y][x] = point_2d.depth
+                importance_buffer[y][x] = token.importance
 
     return DisplayFrame(
         width=TERMINAL_WIDTH,
