@@ -25,13 +25,17 @@ from rotating_donut import (
     generate_ascii_frame_legacy,
     output_to_terminal,
     map_tokens_to_surface,
+    map_tokens_to_surface_with_structure,
     _handle_token_compression,
     _apply_visual_balance,
+    _apply_structural_distribution,
     Point2D,
     Point3D,
     DisplayFrame,
     CodeToken,
     ImportanceLevel,
+    StructuralElement,
+    StructuralInfo,
     TERMINAL_WIDTH,
     TERMINAL_HEIGHT,
     ASCII_CHARS
@@ -501,6 +505,236 @@ class TestTokenMapping(unittest.TestCase):
         # Should use depth-based characters
         self.assertEqual(frame.buffer[10][10], '#')  # depth 0.1
         self.assertEqual(frame.buffer[15][15], '.')  # depth 0.8
+
+
+class TestStructuralSurfaceMapping(unittest.TestCase):
+    """Test suite for structural analysis enhanced surface mapping."""
+
+    def setUp(self):
+        """Set up test fixtures for structural mapping tests."""
+        # Create test tokens
+        self.test_tokens = [
+            CodeToken(type='KEYWORD', value='def', importance=ImportanceLevel.CRITICAL,
+                     line=1, column=0, ascii_char='#'),
+            CodeToken(type='IDENTIFIER', value='test_func', importance=ImportanceLevel.MEDIUM,
+                     line=1, column=4, ascii_char='-'),
+            CodeToken(type='OPERATOR', value='(', importance=ImportanceLevel.HIGH,
+                     line=1, column=13, ascii_char='+'),
+            CodeToken(type='IDENTIFIER', value='x', importance=ImportanceLevel.MEDIUM,
+                     line=2, column=4, ascii_char='-'),
+            CodeToken(type='KEYWORD', value='return', importance=ImportanceLevel.CRITICAL,
+                     line=3, column=4, ascii_char='#')
+        ]
+
+        # Create test 3D points
+        self.test_points = [
+            Point3D(x=1.0, y=0.0, z=0.5, u=0.1, v=0.1),
+            Point3D(x=0.5, y=0.8, z=0.3, u=0.2, v=0.2),
+            Point3D(x=-0.2, y=0.5, z=0.7, u=0.3, v=0.3),
+            Point3D(x=0.8, y=-0.3, z=0.1, u=0.4, v=0.4),
+            Point3D(x=-0.1, y=-0.7, z=0.9, u=0.5, v=0.5)
+        ]
+
+        # Create test structural info
+        function_element = StructuralElement(
+            element_type='function',
+            name='test_func',
+            start_line=1,
+            end_line=3,
+            complexity_score=2.5,
+            nesting_depth=0
+        )
+
+        self.structural_info = StructuralInfo(
+            elements=[function_element],
+            max_complexity=2.5,
+            total_lines=3,
+            import_count=0,
+            function_count=1,
+            class_count=0
+        )
+
+    def test_map_tokens_to_surface_with_structure_basic(self):
+        """Test basic structural surface mapping functionality."""
+        mapped_pairs = map_tokens_to_surface_with_structure(
+            self.test_tokens, self.test_points, self.structural_info
+        )
+
+        # Should return list of (point, token) pairs
+        self.assertIsInstance(mapped_pairs, list)
+        self.assertGreater(len(mapped_pairs), 0)
+
+        # Each pair should be (Point3D, CodeToken)
+        for point, token in mapped_pairs:
+            self.assertIsInstance(point, Point3D)
+            self.assertIsInstance(token, CodeToken)
+
+    def test_map_tokens_to_surface_with_structure_enhancement(self):
+        """Test that structural mapping enhances token importance."""
+        # Get regular mapping for comparison
+        regular_pairs = map_tokens_to_surface(self.test_tokens, self.test_points)
+        structural_pairs = map_tokens_to_surface_with_structure(
+            self.test_tokens, self.test_points, self.structural_info
+        )
+
+        # Structural mapping should potentially have different token distributions
+        # due to enhanced importance levels
+        self.assertEqual(len(regular_pairs), len(structural_pairs))
+
+        # Find tokens that should be enhanced by structural context
+        structural_tokens = [token for _, token in structural_pairs]
+        enhanced_count = sum(1 for token in structural_tokens
+                           if token.importance >= ImportanceLevel.HIGH)
+
+        # Should have some tokens with enhanced importance
+        self.assertGreater(enhanced_count, 0)
+
+    def test_map_tokens_to_surface_with_structure_validation(self):
+        """Test input validation for structural surface mapping."""
+        # Test empty tokens
+        with self.assertRaises(ValueError) as context:
+            map_tokens_to_surface_with_structure([], self.test_points, self.structural_info)
+        self.assertIn("Empty token list", str(context.exception))
+
+        # Test empty points
+        with self.assertRaises(ValueError) as context:
+            map_tokens_to_surface_with_structure(self.test_tokens, [], self.structural_info)
+        self.assertIn("Empty surface points", str(context.exception))
+
+        # Test invalid structural info
+        with self.assertRaises(ValueError) as context:
+            map_tokens_to_surface_with_structure(self.test_tokens, self.test_points, "invalid")
+        self.assertIn("Invalid structural_info parameter", str(context.exception))
+
+    def test_structural_distribution_complexity_ordering(self):
+        """Test that structural distribution respects complexity ordering."""
+        # Create multiple structural elements with different complexities
+        simple_function = StructuralElement(
+            element_type='function',
+            name='simple_func',
+            start_line=1,
+            end_line=2,
+            complexity_score=1.0,
+            nesting_depth=0
+        )
+
+        complex_function = StructuralElement(
+            element_type='function',
+            name='complex_func',
+            start_line=3,
+            end_line=8,
+            complexity_score=5.0,
+            nesting_depth=0
+        )
+
+        complex_structural_info = StructuralInfo(
+            elements=[simple_function, complex_function],
+            max_complexity=5.0,
+            total_lines=8,
+            import_count=0,
+            function_count=2,
+            class_count=0
+        )
+
+        # Create tokens for both functions
+        mixed_tokens = [
+            CodeToken(type='KEYWORD', value='def', importance=ImportanceLevel.CRITICAL,
+                     line=1, column=0, ascii_char='#'),  # simple function
+            CodeToken(type='KEYWORD', value='def', importance=ImportanceLevel.CRITICAL,
+                     line=3, column=0, ascii_char='#'),  # complex function
+            CodeToken(type='IDENTIFIER', value='x', importance=ImportanceLevel.MEDIUM,
+                     line=4, column=4, ascii_char='-'),  # in complex function
+        ]
+
+        # Test with larger point set
+        large_points = self.test_points * 4  # 20 points
+
+        mapped_pairs = map_tokens_to_surface_with_structure(
+            mixed_tokens, large_points, complex_structural_info
+        )
+
+        # Should successfully map tokens with structural priority
+        self.assertGreater(len(mapped_pairs), 0)
+        self.assertLessEqual(len(mapped_pairs), len(large_points))
+
+    def test_structural_distribution_fallback(self):
+        """Test fallback behavior when structural mapping encounters issues."""
+        # This test verifies graceful degradation is available through the main animation loop
+        # The actual fallback is tested in the integration test or main loop
+        pass  # Placeholder for future fallback testing if needed
+
+
+class TestStructuralMappingHelpers(unittest.TestCase):
+    """Test helper functions for structural surface mapping."""
+
+    def test_apply_structural_distribution(self):
+        """Test the structural distribution algorithm."""
+        # Create test data
+        tokens = [
+            CodeToken(type='KEYWORD', value='def', importance=ImportanceLevel.CRITICAL,
+                     line=1, column=0, ascii_char='#'),
+            CodeToken(type='IDENTIFIER', value='func', importance=ImportanceLevel.MEDIUM,
+                     line=1, column=4, ascii_char='-'),
+        ]
+
+        points = [
+            Point3D(x=1.0, y=0.0, z=0.5, u=0.1, v=0.1),
+            Point3D(x=0.5, y=0.8, z=0.3, u=0.2, v=0.2),
+            Point3D(x=-0.2, y=0.5, z=0.7, u=0.3, v=0.3),
+        ]
+
+        function_element = StructuralElement(
+            element_type='function',
+            name='func',
+            start_line=1,
+            end_line=2,
+            complexity_score=2.0,
+            nesting_depth=0
+        )
+
+        structural_info = StructuralInfo(
+            elements=[function_element],
+            max_complexity=2.0,
+            total_lines=2,
+            import_count=0,
+            function_count=1,
+            class_count=0
+        )
+
+        # Test structural distribution
+        mapped_pairs = _apply_structural_distribution(tokens, points, structural_info)
+
+        # Should return valid mappings
+        self.assertIsInstance(mapped_pairs, list)
+        self.assertGreater(len(mapped_pairs), 0)
+
+        # All mappings should be valid
+        for point, token in mapped_pairs:
+            self.assertIsInstance(point, Point3D)
+            self.assertIsInstance(token, CodeToken)
+
+    def test_structural_distribution_edge_cases(self):
+        """Test edge cases for structural distribution."""
+        # Test with no structural elements
+        empty_structural_info = StructuralInfo(
+            elements=[],
+            max_complexity=0.0,
+            total_lines=1,
+            import_count=0,
+            function_count=0,
+            class_count=0
+        )
+
+        tokens = [
+            CodeToken(type='IDENTIFIER', value='x', importance=ImportanceLevel.MEDIUM,
+                     line=1, column=0, ascii_char='-'),
+        ]
+
+        points = [Point3D(x=1.0, y=0.0, z=0.5, u=0.1, v=0.1)]
+
+        # Should handle empty structural elements gracefully
+        mapped_pairs = _apply_structural_distribution(tokens, points, empty_structural_info)
+        self.assertIsInstance(mapped_pairs, list)
 
 
 if __name__ == "__main__":

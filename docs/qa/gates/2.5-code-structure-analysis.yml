@@ -1,0 +1,52 @@
+schema: 1
+story: "2.5"
+story_title: "Code Structure Analysis"
+gate: CONCERNS
+status_reason: "Critical performance regression detected - FPS dropped from 45+ to ~3 due to uncached token enhancement operations"
+reviewer: "Quinn (Test Architect)"
+updated: "2025-09-27T21:30:00Z"
+
+waiver: { active: false }
+
+top_issues:
+  - id: "PERF-001"
+    severity: high
+    finding: "Token enhancement operations run every frame causing 93% performance degradation (45 FPS → 3 FPS)"
+    suggested_action: "Cache enhanced tokens outside animation loop to restore target 30+ FPS performance"
+  - id: "ARCH-001"
+    severity: medium
+    finding: "O(n*m) complexity per frame for token classification where n=tokens, m=structural_elements"
+    suggested_action: "Pre-compute enhanced token mapping once during startup"
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: "No security concerns identified in structural analysis implementation"
+  performance:
+    status: FAIL
+    notes: "Critical performance regression - 93% FPS reduction due to per-frame token enhancement"
+  reliability:
+    status: PASS
+    notes: "Proper error handling and fallback mechanisms implemented"
+  maintainability:
+    status: PASS
+    notes: "Well-structured code with comprehensive debug output and testing"
+
+evidence:
+  tests_reviewed: 60
+  risks_identified: 2
+  trace:
+    ac_covered: [1, 2, 3, 4, 5]
+    ac_gaps: []
+
+quality_score: 60
+
+recommendations:
+  immediate:
+    - action: "Move token enhancement outside animation loop to cache results"
+      refs: ["rotating_donut.py:1609-1623", "rotating_donut.py:2211"]
+    - action: "Benchmark performance to verify 30+ FPS restoration"
+      refs: ["rotating_donut.py:2211"]
+  future:
+    - action: "Consider incremental token enhancement for dynamic code analysis"
+      refs: ["rotating_donut.py:1562-1631"]

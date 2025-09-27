@@ -120,6 +120,27 @@ class DisplayFrame(NamedTuple):
     frame_number: int
 
 
+class StructuralElement(NamedTuple):
+    """Represents a structural element in the code (function, class, import)."""
+    element_type: str  # 'function', 'class', 'import'
+    name: str
+    start_line: int
+    end_line: int
+    complexity_score: float
+    nesting_depth: int
+    parent_element: Optional[str] = None
+
+
+class StructuralInfo(NamedTuple):
+    """Contains structural analysis results."""
+    elements: List[StructuralElement]
+    max_complexity: float
+    total_lines: int
+    import_count: int
+    function_count: int
+    class_count: int
+
+
 # === MATHEMATICAL ENGINE ===
 
 def generate_torus_points(params: TorusParameters) -> List[Point3D]:
@@ -914,7 +935,843 @@ def _is_string_literal(token_value: str) -> bool:
         return False
 
 
+def classify_importance_with_structure(token: CodeToken,
+                                     structural_info: StructuralInfo) -> int:
+    """Enhanced token importance classification incorporating structural analysis.
+
+    Extends the base classify_importance() function with structural context to
+    boost importance of tokens within critical structural elements (functions,
+    classes, imports) based on their complexity and nesting depth.
+
+    Enhancement Strategy:
+    - Base importance from existing classify_importance()
+    - Structural context boosts for function/class/import elements
+    - Complexity-based modifiers from structural analysis
+    - Hierarchical nesting bonuses for nested structures
+
+    Args:
+        token: CodeToken object with type, value, and position information
+        structural_info: StructuralInfo from analyze_structure() containing
+                        structural elements and complexity analysis
+
+    Returns:
+        Enhanced ImportanceLevel value incorporating structural context
+
+    Raises:
+        ValueError: If parameters are invalid with "Solution:" guidance
+    """
+    # Input validation
+    if not isinstance(token, CodeToken):
+        raise ValueError(
+            "Invalid token parameter: expected CodeToken object. "
+            "Solution: Ensure token is created using CodeToken constructor"
+        )
+
+    if not isinstance(structural_info, StructuralInfo):
+        raise ValueError(
+            "Invalid structural_info parameter: expected StructuralInfo object. "
+            "Solution: Generate structural_info using analyze_structure()"
+        )
+
+    # Get base importance using existing classification
+    base_importance = classify_importance(token)
+
+    # Find structural elements containing this token
+    containing_elements = _find_containing_elements(token, structural_info.elements)
+
+    if not containing_elements:
+        # Token not in any structural element, return base importance
+        return base_importance
+
+    # Calculate structural enhancement based on containing elements
+    structural_bonus = _calculate_structural_bonus(containing_elements, structural_info)
+
+    # Apply enhancement while respecting ImportanceLevel bounds
+    enhanced_importance = _apply_structural_enhancement(base_importance, structural_bonus)
+
+    return enhanced_importance
+
+
+def _find_containing_elements(token: CodeToken,
+                            elements: List[StructuralElement]) -> List[StructuralElement]:
+    """Find structural elements that contain the given token."""
+    containing = []
+
+    for element in elements:
+        # Check if token is within element's line range
+        if element.start_line <= token.line <= element.end_line:
+            containing.append(element)
+
+    # Sort by nesting depth (deepest first) for proper hierarchy
+    return sorted(containing, key=lambda e: e.nesting_depth, reverse=True)
+
+
+def _calculate_structural_bonus(containing_elements: List[StructuralElement],
+                              structural_info: StructuralInfo) -> float:
+    """Calculate importance bonus based on structural context."""
+    if not containing_elements:
+        return 0.0
+
+    total_bonus = 0.0
+
+    for element in containing_elements:
+        # Base bonus by element type
+        if element.element_type == 'class':
+            total_bonus += 0.8  # Classes are architecturally important
+        elif element.element_type == 'function':
+            total_bonus += 0.6  # Functions are implementation important
+        elif element.element_type == 'import':
+            total_bonus += 0.4  # Imports set up dependencies
+
+        # Complexity bonus (normalized by max complexity)
+        if structural_info.max_complexity > 0:
+            complexity_ratio = element.complexity_score / structural_info.max_complexity
+            total_bonus += complexity_ratio * 0.5
+
+        # Nesting depth bonus (nested structures are more complex)
+        nesting_bonus = min(element.nesting_depth * 0.2, 0.6)  # Cap at 0.6
+        total_bonus += nesting_bonus
+
+    # Cap total bonus to prevent excessive enhancement
+    return min(total_bonus, 1.5)
+
+
+def _apply_structural_enhancement(base_importance: int, structural_bonus: float) -> int:
+    """Apply structural bonus while respecting ImportanceLevel bounds."""
+    # Convert to float for calculation
+    enhanced = float(base_importance) + structural_bonus
+
+    # Round and clamp to valid ImportanceLevel range
+    enhanced_int = round(enhanced)
+    return max(ImportanceLevel.LOW, min(enhanced_int, ImportanceLevel.CRITICAL))
+
+
+def analyze_structure(tokens: List[CodeToken]) -> StructuralInfo:
+    """Extract structural elements from tokenized code.
+
+    Analyzes token stream to identify functions, classes, imports, and their
+    structural relationships. Calculates complexity scores and nesting depth
+    for hierarchical distribution on torus surface.
+
+    Args:
+        tokens: List of CodeToken objects from tokenize_code()
+
+    Returns:
+        StructuralInfo containing all identified structural elements
+
+    Raises:
+        ValueError: If token analysis fails with "Solution:" guidance
+    """
+    if not tokens:
+        raise ValueError(
+            "Empty token list provided for structural analysis. "
+            "Solution: Ensure tokens are generated using tokenize_code()"
+        )
+
+    elements = []
+    element_stack = []  # Track nesting depth
+    current_line = 1
+    total_lines = max(token.line for token in tokens) if tokens else 0
+
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+
+        # Identify function definitions
+        if token.type == 'KEYWORD' and token.value == 'def':
+            element = _identify_function_definition(tokens, i, element_stack)
+            if element:
+                elements.append(element)
+                element_stack.append(element)
+
+        # Identify class definitions
+        elif token.type == 'KEYWORD' and token.value == 'class':
+            element = _identify_class_definition(tokens, i, element_stack)
+            if element:
+                elements.append(element)
+                element_stack.append(element)
+
+        # Identify import statements
+        elif token.type == 'KEYWORD' and token.value in ('import', 'from'):
+            element = _identify_import_statement(tokens, i, element_stack)
+            if element:
+                elements.append(element)
+
+        # Track indentation changes to manage nesting stack
+        if token.line > current_line:
+            current_line = token.line
+            # Remove elements from stack if we've moved past their scope
+            element_stack = _update_element_stack(element_stack, current_line, tokens)
+
+        i += 1
+
+    # Calculate summary statistics
+    import_count = sum(1 for e in elements if e.element_type == 'import')
+    function_count = sum(1 for e in elements if e.element_type == 'function')
+    class_count = sum(1 for e in elements if e.element_type == 'class')
+    max_complexity = max((e.complexity_score for e in elements), default=0.0)
+
+    return StructuralInfo(
+        elements=elements,
+        max_complexity=max_complexity,
+        total_lines=total_lines,
+        import_count=import_count,
+        function_count=function_count,
+        class_count=class_count
+    )
+
+
+def _identify_function_definition(tokens: List[CodeToken], start_idx: int,
+                                element_stack: List[StructuralElement]) -> Optional[StructuralElement]:
+    """Identify function definition from token stream starting at 'def' keyword."""
+    if start_idx >= len(tokens) - 1:
+        return None
+
+    # Look for function name after 'def'
+    name_idx = start_idx + 1
+    while name_idx < len(tokens) and tokens[name_idx].type in ('WHITESPACE',):
+        name_idx += 1
+
+    if name_idx >= len(tokens) or tokens[name_idx].type != 'IDENTIFIER':
+        return None
+
+    function_name = tokens[name_idx].value
+    start_line = tokens[start_idx].line
+
+    # Calculate complexity based on token count and keywords
+    end_line = _find_function_end_line(tokens, start_idx)
+    complexity = _calculate_function_complexity(tokens, start_idx, end_line)
+
+    # Determine nesting depth and parent
+    nesting_depth = len(element_stack)
+    parent_element = element_stack[-1].name if element_stack else None
+
+    return StructuralElement(
+        element_type='function',
+        name=function_name,
+        start_line=start_line,
+        end_line=end_line,
+        complexity_score=complexity,
+        nesting_depth=nesting_depth,
+        parent_element=parent_element
+    )
+
+
+def _identify_class_definition(tokens: List[CodeToken], start_idx: int,
+                             element_stack: List[StructuralElement]) -> Optional[StructuralElement]:
+    """Identify class definition from token stream starting at 'class' keyword."""
+    if start_idx >= len(tokens) - 1:
+        return None
+
+    # Look for class name after 'class'
+    name_idx = start_idx + 1
+    while name_idx < len(tokens) and tokens[name_idx].type in ('WHITESPACE',):
+        name_idx += 1
+
+    if name_idx >= len(tokens) or tokens[name_idx].type != 'IDENTIFIER':
+        return None
+
+    class_name = tokens[name_idx].value
+    start_line = tokens[start_idx].line
+
+    # Calculate complexity based on methods and inheritance
+    end_line = _find_class_end_line(tokens, start_idx)
+    complexity = _calculate_class_complexity(tokens, start_idx, end_line)
+
+    # Determine nesting depth and parent
+    nesting_depth = len(element_stack)
+    parent_element = element_stack[-1].name if element_stack else None
+
+    return StructuralElement(
+        element_type='class',
+        name=class_name,
+        start_line=start_line,
+        end_line=end_line,
+        complexity_score=complexity,
+        nesting_depth=nesting_depth,
+        parent_element=parent_element
+    )
+
+
+def _identify_import_statement(tokens: List[CodeToken], start_idx: int,
+                             element_stack: List[StructuralElement]) -> Optional[StructuralElement]:
+    """Identify import statement from token stream starting at 'import' or 'from'."""
+    if start_idx >= len(tokens):
+        return None
+
+    import_type = tokens[start_idx].value  # 'import' or 'from'
+    start_line = tokens[start_idx].line
+
+    # Extract import name/module
+    import_name = _extract_import_name(tokens, start_idx)
+    if not import_name:
+        return None
+
+    # Calculate complexity based on import type and dependencies
+    complexity = _calculate_import_complexity(tokens, start_idx, import_type)
+
+    # Imports are typically at module level (nesting depth 0)
+    nesting_depth = 0
+
+    return StructuralElement(
+        element_type='import',
+        name=import_name,
+        start_line=start_line,
+        end_line=start_line,  # Imports are single line
+        complexity_score=complexity,
+        nesting_depth=nesting_depth,
+        parent_element=None
+    )
+
+
+def _find_function_end_line(tokens: List[CodeToken], start_idx: int) -> int:
+    """Find the end line of a function definition by tracking indentation."""
+    if start_idx >= len(tokens):
+        return tokens[start_idx].line if start_idx < len(tokens) else 1
+
+    function_start_line = tokens[start_idx].line
+    base_indentation = None
+
+    # Find the first indented line after the function definition
+    for i in range(start_idx + 1, len(tokens)):
+        token = tokens[i]
+        if token.line > function_start_line and token.type not in ('WHITESPACE', 'COMMENT'):
+            if base_indentation is None:
+                base_indentation = token.column
+            elif token.column <= base_indentation and token.type != 'WHITESPACE':
+                return token.line - 1
+
+    # If no end found, use last token line
+    return tokens[-1].line if tokens else function_start_line
+
+
+def _find_class_end_line(tokens: List[CodeToken], start_idx: int) -> int:
+    """Find the end line of a class definition by tracking indentation."""
+    return _find_function_end_line(tokens, start_idx)  # Same logic as functions
+
+
+def _calculate_function_complexity(tokens: List[CodeToken], start_idx: int, end_line: int) -> float:
+    """Calculate function complexity based on token count and control structures."""
+    complexity = 1.0  # Base complexity
+    control_keywords = {'if', 'elif', 'else', 'for', 'while', 'try', 'except', 'finally', 'with'}
+
+    # Count tokens and control structures within function
+    for i in range(start_idx, len(tokens)):
+        token = tokens[i]
+        if token.line > end_line:
+            break
+
+        if token.type == 'KEYWORD' and token.value in control_keywords:
+            complexity += 1.0
+        elif token.type == 'OPERATOR':
+            complexity += 0.1
+
+    return complexity
+
+
+def _calculate_class_complexity(tokens: List[CodeToken], start_idx: int, end_line: int) -> float:
+    """Calculate class complexity based on method count and inheritance."""
+    complexity = 2.0  # Base complexity higher than functions
+    method_count = 0
+
+    # Count methods within class
+    for i in range(start_idx, len(tokens)):
+        token = tokens[i]
+        if token.line > end_line:
+            break
+
+        if token.type == 'KEYWORD' and token.value == 'def':
+            method_count += 1
+            complexity += 1.5
+
+    # Add complexity for inheritance (parentheses after class name)
+    inheritance_bonus = _check_inheritance(tokens, start_idx)
+    complexity += inheritance_bonus
+
+    return complexity
+
+
+def _calculate_import_complexity(tokens: List[CodeToken], start_idx: int, import_type: str) -> float:
+    """Calculate import complexity based on type and dependencies."""
+    base_complexity = 0.5  # Imports are generally less complex
+
+    if import_type == 'from':
+        base_complexity += 0.3  # from imports slightly more complex
+
+    # Count imported items
+    import_count = _count_imported_items(tokens, start_idx)
+    return base_complexity + (import_count * 0.1)
+
+
+def _extract_import_name(tokens: List[CodeToken], start_idx: int) -> str:
+    """Extract the main module/package name from import statement."""
+    import_token = tokens[start_idx]
+
+    if import_token.value == 'from':
+        # from module import item
+        for i in range(start_idx + 1, min(start_idx + 10, len(tokens))):
+            if tokens[i].type == 'IDENTIFIER':
+                return tokens[i].value
+    elif import_token.value == 'import':
+        # import module
+        for i in range(start_idx + 1, min(start_idx + 10, len(tokens))):
+            if tokens[i].type == 'IDENTIFIER':
+                return tokens[i].value
+
+    return 'unknown_import'
+
+
+def _count_imported_items(tokens: List[CodeToken], start_idx: int) -> int:
+    """Count the number of items being imported."""
+    count = 0
+    in_import_list = False
+
+    for i in range(start_idx, min(start_idx + 20, len(tokens))):
+        token = tokens[i]
+        if token.line > tokens[start_idx].line:
+            break
+
+        if token.value == 'import':
+            in_import_list = True
+        elif in_import_list and token.type == 'IDENTIFIER':
+            count += 1
+        elif token.value == ',':
+            continue
+
+    return max(count, 1)
+
+
+def _check_inheritance(tokens: List[CodeToken], start_idx: int) -> float:
+    """Check if class has inheritance and return complexity bonus."""
+    # Look for parentheses after class name indicating inheritance
+    for i in range(start_idx, min(start_idx + 10, len(tokens))):
+        if tokens[i].value == '(':
+            return 1.0  # Inheritance adds complexity
+    return 0.0
+
+
+def _update_element_stack(element_stack: List[StructuralElement], current_line: int,
+                         tokens: List[CodeToken]) -> List[StructuralElement]:
+    """Update element stack by removing elements that are no longer in scope."""
+    # Keep elements that haven't ended yet
+    return [elem for elem in element_stack if elem.end_line >= current_line]
+
+
+def debug_structural_analysis(structural_info: StructuralInfo, tokens: List[CodeToken],
+                            enable_debug: bool = False) -> None:
+    """Display detailed debugging information for structural analysis.
+
+    Provides comprehensive debugging output showing structural elements,
+    complexity calculations, token classifications, and surface mapping
+    distribution when debug mode is enabled.
+
+    Args:
+        structural_info: StructuralInfo from analyze_structure()
+        tokens: List of CodeToken objects from tokenize_code()
+        enable_debug: Flag to enable/disable debug output
+
+    Output:
+        Detailed structural analysis information to stdout when enabled
+    """
+    if not enable_debug:
+        return
+
+    print("\n" + "="*60, flush=True)
+    print("STRUCTURAL ANALYSIS DEBUG OUTPUT", flush=True)
+    print("="*60, flush=True)
+
+    # Summary statistics
+    print(f"\n[STRUCTURAL SUMMARY]:", flush=True)
+    print(f"   Total Lines: {structural_info.total_lines}", flush=True)
+    print(f"   Functions: {structural_info.function_count}", flush=True)
+    print(f"   Classes: {structural_info.class_count}", flush=True)
+    print(f"   Imports: {structural_info.import_count}", flush=True)
+    print(f"   Max Complexity: {structural_info.max_complexity:.2f}", flush=True)
+
+    # Structural elements details
+    print(f"\n[STRUCTURAL ELEMENTS]:", flush=True)
+    for element in sorted(structural_info.elements, key=lambda e: e.complexity_score, reverse=True):
+        print(f"   {element.element_type.upper()}: {element.name}", flush=True)
+        print(f"      Lines: {element.start_line}-{element.end_line}", flush=True)
+        print(f"      Complexity: {element.complexity_score:.2f}", flush=True)
+        print(f"      Nesting: {element.nesting_depth}", flush=True)
+        if element.parent_element:
+            print(f"      Parent: {element.parent_element}", flush=True)
+        print("", flush=True)
+
+    # Token classification with structural context
+    print(f"\n[TOKEN CLASSIFICATION SAMPLES]:", flush=True)
+    sample_tokens = tokens[:20] if len(tokens) > 20 else tokens
+    for token in sample_tokens:
+        base_importance = classify_importance(token)
+        enhanced_importance = classify_importance_with_structure(token, structural_info)
+        enhancement = enhanced_importance - base_importance
+
+        print(f"   '{token.value}' (Line {token.line})", flush=True)
+        print(f"      Base: {base_importance} -> Enhanced: {enhanced_importance} (+{enhancement})", flush=True)
+        print(f"      Type: {token.type} | ASCII: '{token.ascii_char}'", flush=True)
+
+    print(f"\n[SURFACE MAPPING PREVIEW]:", flush=True)
+    _debug_surface_mapping_distribution(structural_info)
+
+
+def debug_surface_mapping(mapped_pairs: List[Tuple[Point3D, CodeToken]],
+                         structural_info: StructuralInfo,
+                         enable_debug: bool = False) -> None:
+    """Display debugging information for surface mapping distribution.
+
+    Shows how tokens are distributed across the torus surface with
+    structural element groupings and importance distributions.
+
+    Args:
+        mapped_pairs: Token-surface mapping pairs from map_tokens_to_surface_with_structure()
+        structural_info: StructuralInfo from analyze_structure()
+        enable_debug: Flag to enable/disable debug output
+    """
+    if not enable_debug:
+        return
+
+    print(f"\n[SURFACE MAPPING DEBUG]:", flush=True)
+    print(f"   Total Mapped Pairs: {len(mapped_pairs)}", flush=True)
+
+    # Group by importance levels
+    importance_counts = {}
+    for point, token in mapped_pairs:
+        level = token.importance
+        importance_counts[level] = importance_counts.get(level, 0) + 1
+
+    print(f"\n[IMPORTANCE DISTRIBUTION]:", flush=True)
+    for level in sorted(importance_counts.keys(), reverse=True):
+        count = importance_counts[level]
+        percentage = (count / len(mapped_pairs)) * 100 if mapped_pairs else 0
+        level_name = _get_importance_level_name(level)
+        print(f"   {level_name}: {count} tokens ({percentage:.1f}%)", flush=True)
+
+    # Show spatial distribution by structural elements
+    _debug_structural_spatial_distribution(mapped_pairs, structural_info)
+
+
+def debug_nested_structures(structural_info: StructuralInfo, enable_debug: bool = False) -> None:
+    """Display debugging information specifically for nested structure handling.
+
+    Shows the hierarchy of nested functions, classes, and their complexity
+    inheritance through the nesting levels.
+
+    Args:
+        structural_info: StructuralInfo from analyze_structure()
+        enable_debug: Flag to enable/disable debug output
+    """
+    if not enable_debug:
+        return
+
+    print(f"\n[NESTED STRUCTURE DEBUG]:", flush=True)
+
+    # Find all nested elements
+    nested_elements = [elem for elem in structural_info.elements if elem.nesting_depth > 0]
+
+    if not nested_elements:
+        print("   No nested structures found.", flush=True)
+        return
+
+    # Group by nesting depth
+    depth_groups = {}
+    for element in nested_elements:
+        depth = element.nesting_depth
+        if depth not in depth_groups:
+            depth_groups[depth] = []
+        depth_groups[depth].append(element)
+
+    for depth in sorted(depth_groups.keys()):
+        elements = depth_groups[depth]
+        print(f"\n   DEPTH {depth}:", flush=True)
+        for element in elements:
+            indent = "   " + "  " * depth
+            print(f"{indent}{element.element_type}: {element.name}", flush=True)
+            print(f"{indent}   Parent: {element.parent_element}", flush=True)
+            print(f"{indent}   Complexity: {element.complexity_score:.2f}", flush=True)
+
+
+def _debug_surface_mapping_distribution(structural_info: StructuralInfo) -> None:
+    """Show preview of how surface points would be allocated to structural elements."""
+    if not structural_info.elements:
+        print("   No structural elements for surface allocation.", flush=True)
+        return
+
+    total_complexity = sum(elem.complexity_score for elem in structural_info.elements)
+    sample_surface_points = 100  # Sample for calculation
+
+    print(f"   Surface Allocation Preview (100 sample points):", flush=True)
+    for element in structural_info.elements:
+        if total_complexity > 0:
+            ratio = element.complexity_score / total_complexity
+            allocation = int(sample_surface_points * ratio * 0.8)
+        else:
+            allocation = sample_surface_points // len(structural_info.elements)
+
+        print(f"      {element.name}: {allocation} points ({allocation}%)", flush=True)
+
+
+def _debug_structural_spatial_distribution(mapped_pairs: List[Tuple[Point3D, CodeToken]],
+                                         structural_info: StructuralInfo) -> None:
+    """Show how tokens are spatially distributed across structural elements."""
+    print(f"\n[SPATIAL DISTRIBUTION BY STRUCTURE]:", flush=True)
+
+    # Group mapped pairs by structural elements
+    element_mappings = {}
+    unstructured_count = 0
+
+    for point, token in mapped_pairs:
+        # Find which structural element contains this token
+        containing_element = None
+        for element in structural_info.elements:
+            if element.start_line <= token.line <= element.end_line:
+                containing_element = element.name
+                break
+
+        if containing_element:
+            if containing_element not in element_mappings:
+                element_mappings[containing_element] = 0
+            element_mappings[containing_element] += 1
+        else:
+            unstructured_count += 1
+
+    # Display distribution
+    for element_name, count in element_mappings.items():
+        percentage = (count / len(mapped_pairs)) * 100 if mapped_pairs else 0
+        print(f"   {element_name}: {count} tokens ({percentage:.1f}%)", flush=True)
+
+    if unstructured_count > 0:
+        percentage = (unstructured_count / len(mapped_pairs)) * 100
+        print(f"   [Unstructured]: {unstructured_count} tokens ({percentage:.1f}%)", flush=True)
+
+
+def _get_importance_level_name(level: int) -> str:
+    """Convert importance level to human-readable name."""
+    if level == ImportanceLevel.CRITICAL:
+        return "CRITICAL"
+    elif level == ImportanceLevel.HIGH:
+        return "HIGH"
+    elif level == ImportanceLevel.MEDIUM:
+        return "MEDIUM"
+    else:
+        return "LOW"
+
+
 # === RENDERING ENGINE ===
+
+def map_tokens_to_surface_with_structure(tokens: List[CodeToken],
+                                        points: List[Point3D],
+                                        structural_info: StructuralInfo) -> List[Tuple[Point3D, CodeToken]]:
+    """Enhanced token-to-surface mapping incorporating structural hierarchy.
+
+    Extends map_tokens_to_surface() with structural analysis to prioritize
+    tokens within critical structural elements (functions, classes, imports)
+    and apply hierarchical distribution based on code architecture.
+
+    Enhancement Features:
+    - Structural importance boosts using classify_importance_with_structure()
+    - Hierarchical surface allocation prioritizing complex structural elements
+    - Spatial clustering for tokens within same structural elements
+    - Enhanced density mapping accounting for structural complexity
+
+    Args:
+        tokens: List of classified code tokens with importance and ASCII chars
+        points: List of 3D torus surface points with u,v parameters
+        structural_info: StructuralInfo from analyze_structure() with complexity data
+
+    Returns:
+        List of (point, token) pairs with structural hierarchy emphasis
+
+    Raises:
+        ValueError: If inputs are invalid with actionable solution guidance
+    """
+    # Input validation
+    if not tokens:
+        raise ValueError(
+            "Empty token list provided for structural surface mapping. "
+            "Solution: Ensure source code tokenization produces valid tokens"
+        )
+
+    if not points:
+        raise ValueError(
+            "Empty surface points list provided for mapping. "
+            "Solution: Ensure torus generation produces valid 3D points"
+        )
+
+    if not isinstance(structural_info, StructuralInfo):
+        raise ValueError(
+            "Invalid structural_info parameter: expected StructuralInfo object. "
+            "Solution: Generate structural_info using analyze_structure()"
+        )
+
+    # Enhance token importance using structural context
+    enhanced_tokens = []
+    for token in tokens:
+        enhanced_importance = classify_importance_with_structure(token, structural_info)
+
+        # Create enhanced token with new importance and corresponding ASCII char
+        ascii_char = _get_ascii_char_for_importance(enhanced_importance)
+
+        enhanced_token = CodeToken(
+            type=token.type,
+            value=token.value,
+            importance=enhanced_importance,
+            line=token.line,
+            column=token.column,
+            ascii_char=ascii_char
+        )
+        enhanced_tokens.append(enhanced_token)
+
+    # Apply structural spatial distribution
+    mapped_pairs = _apply_structural_distribution(enhanced_tokens, points, structural_info)
+
+    # Apply visual balance with structural awareness
+    balanced_pairs = _apply_structural_visual_balance(mapped_pairs, points, structural_info)
+
+    return balanced_pairs
+
+
+def _get_ascii_char_for_importance(importance_level: int) -> str:
+    """Map importance level to ASCII character for rendering."""
+    if importance_level == ImportanceLevel.CRITICAL:
+        return ASCII_CHARS['HIGH']  # '#'
+    elif importance_level == ImportanceLevel.HIGH:
+        return ASCII_CHARS['MEDIUM']  # '+'
+    elif importance_level == ImportanceLevel.MEDIUM:
+        return ASCII_CHARS['LOW']  # '-'
+    else:  # ImportanceLevel.LOW
+        return ASCII_CHARS['BACKGROUND']  # '.'
+
+
+def _apply_structural_distribution(tokens: List[CodeToken],
+                                 points: List[Point3D],
+                                 structural_info: StructuralInfo) -> List[Tuple[Point3D, CodeToken]]:
+    """Apply structural hierarchy to surface distribution."""
+    # Group tokens by structural elements
+    element_groups = _group_tokens_by_structure(tokens, structural_info.elements)
+
+    # Calculate surface allocation for each structural element
+    element_allocations = _calculate_structural_allocations(element_groups, points, structural_info)
+
+    # Distribute tokens within allocated surface regions
+    mapped_pairs = []
+    point_index = 0
+
+    # Process elements in complexity order (most complex first)
+    sorted_elements = sorted(structural_info.elements,
+                           key=lambda e: e.complexity_score, reverse=True)
+
+    for element in sorted_elements:
+        element_tokens = element_groups.get(element.name, [])
+        if not element_tokens:
+            continue
+
+        allocation_size = element_allocations.get(element.name, 0)
+        if allocation_size == 0:
+            continue
+
+        # Get surface points for this element
+        element_points = points[point_index:point_index + allocation_size]
+        point_index += allocation_size
+
+        # Apply density mapping within element
+        element_pairs = _map_element_tokens_to_points(element_tokens, element_points)
+        mapped_pairs.extend(element_pairs)
+
+    # Handle remaining tokens not in structural elements
+    remaining_tokens = [token for token in tokens
+                       if not any(token in element_groups.get(elem.name, [])
+                                for elem in structural_info.elements)]
+
+    if remaining_tokens and point_index < len(points):
+        remaining_points = points[point_index:]
+        remaining_pairs = _map_element_tokens_to_points(remaining_tokens, remaining_points)
+        mapped_pairs.extend(remaining_pairs)
+
+    return mapped_pairs
+
+
+def _group_tokens_by_structure(tokens: List[CodeToken],
+                             elements: List[StructuralElement]) -> dict:
+    """Group tokens by their containing structural elements."""
+    groups = {}
+
+    for element in elements:
+        element_tokens = []
+        for token in tokens:
+            if element.start_line <= token.line <= element.end_line:
+                element_tokens.append(token)
+        groups[element.name] = element_tokens
+
+    return groups
+
+
+def _calculate_structural_allocations(element_groups: dict,
+                                    points: List[Point3D],
+                                    structural_info: StructuralInfo) -> dict:
+    """Calculate surface point allocation for each structural element."""
+    allocations = {}
+    total_points = len(points)
+    total_complexity = sum(elem.complexity_score for elem in structural_info.elements)
+
+    if total_complexity == 0:
+        # Equal distribution if no complexity data
+        points_per_element = total_points // max(len(element_groups), 1)
+        for element_name in element_groups:
+            allocations[element_name] = points_per_element
+    else:
+        # Allocate based on complexity ratios
+        for element in structural_info.elements:
+            if element.name in element_groups:
+                complexity_ratio = element.complexity_score / total_complexity
+                allocation = int(total_points * complexity_ratio * 0.8)  # 80% for structured elements
+                allocations[element.name] = max(allocation, 1)
+
+    return allocations
+
+
+def _map_element_tokens_to_points(tokens: List[CodeToken],
+                                points: List[Point3D]) -> List[Tuple[Point3D, CodeToken]]:
+    """Map tokens to points within a structural element."""
+    if not tokens or not points:
+        return []
+
+    # Use density mapping similar to original algorithm
+    density_map = {
+        ImportanceLevel.CRITICAL: 4,
+        ImportanceLevel.HIGH: 3,
+        ImportanceLevel.MEDIUM: 2,
+        ImportanceLevel.LOW: 1
+    }
+
+    mapped_pairs = []
+    point_index = 0
+
+    # Sort tokens by importance and position
+    sorted_tokens = sorted(tokens, key=lambda t: (-t.importance, t.line, t.column))
+
+    for token in sorted_tokens:
+        density_allocation = min(density_map[token.importance],
+                               len(points) - point_index)
+
+        for _ in range(max(1, density_allocation)):
+            if point_index >= len(points):
+                break
+
+            mapped_pairs.append((points[point_index], token))
+            point_index += 1
+
+    return mapped_pairs
+
+
+def _apply_structural_visual_balance(mapped_pairs: List[Tuple[Point3D, CodeToken]],
+                                   points: List[Point3D],
+                                   structural_info: StructuralInfo) -> List[Tuple[Point3D, CodeToken]]:
+    """Apply visual balance with structural awareness."""
+    # For now, return the pairs as-is. This can be enhanced with
+    # structural clustering algorithms in future iterations
+    return mapped_pairs
+
 
 def map_tokens_to_surface(tokens: List[CodeToken],
                          points: List[Point3D]) -> List[Tuple[Point3D, CodeToken]]:
@@ -1274,21 +2131,28 @@ def handle_interrupts() -> bool:
         return False
 
 
-def run_animation_loop() -> None:
-    """Main execution loop with frame rate control.
+def run_animation_loop(enable_debug: bool = False) -> None:
+    """Main execution loop with frame rate control and structural analysis.
 
-    Implements comprehensive animation control:
+    Implements comprehensive animation control with enhanced structural analysis:
     - Target 30+ FPS with dynamic timing adjustment
     - Graceful keyboard interrupt handling (Ctrl+C)
     - Frame timing validation and debugging
     - Memory management with buffer clearing
+    - Structural analysis integration with optional debugging
     - Consistent performance across different system capabilities
 
     Follows Animation Controller specifications with proper integration
     of MathematicalEngine, ParsingEngine, and RenderingEngine systems.
+    Enhanced with structural analysis from Story 2.5.
+
+    Args:
+        enable_debug: Flag to enable structural analysis debugging output
     """
-    print("Starting 3D ASCII Donut Animation...", flush=True)
+    print("Starting 3D ASCII Donut Animation with Structural Analysis...", flush=True)
     print("Target Frame Rate: 30+ FPS", flush=True)
+    if enable_debug:
+        print("Debug Mode: ENABLED", flush=True)
     print("Press Ctrl+C to exit", flush=True)
     print("", flush=True)  # Add spacing
 
@@ -1316,6 +2180,19 @@ def run_animation_loop() -> None:
         print("Solution: Ensure script file is accessible and contains valid Python", flush=True)
         return
 
+    # Perform structural analysis (cached for performance per coding standards)
+    try:
+        structural_info = analyze_structure(tokens)
+
+        # Display debug information once at startup if enabled
+        if enable_debug:
+            debug_structural_analysis(structural_info, tokens, enable_debug)
+            debug_nested_structures(structural_info, enable_debug)
+    except Exception as e:
+        print(f"Error in structural analysis: {e}", flush=True)
+        print("Solution: Check token structure and retry analysis", flush=True)
+        return
+
     try:
         while True:
             frame_start_time = time.time()
@@ -1329,13 +2206,26 @@ def run_animation_loop() -> None:
             # Apply Y-axis rotation transformation
             rotated_points = apply_rotation(torus_points, rotation_angle)
 
-            # Map tokens to rotated surface points
+            # Map tokens to rotated surface points with structural analysis
             try:
-                mapped_pairs = map_tokens_to_surface(tokens, rotated_points)
+                mapped_pairs = map_tokens_to_surface_with_structure(tokens, rotated_points, structural_info)
+
+                # Display surface mapping debug info for first frame only
+                if enable_debug and frame_count == 0:
+                    debug_surface_mapping(mapped_pairs, structural_info, enable_debug)
+
             except Exception as e:
-                print(f"Error mapping tokens to surface: {e}", flush=True)
-                print("Solution: Check token and surface point generation", flush=True)
-                break
+                print(f"Error mapping tokens to surface with structure: {e}", flush=True)
+                print("Solution: Check token, surface point, and structural analysis", flush=True)
+
+                # Fallback to basic mapping if structural mapping fails
+                try:
+                    mapped_pairs = map_tokens_to_surface(tokens, rotated_points)
+                    if enable_debug:
+                        print("Fallback: Using basic token mapping", flush=True)
+                except Exception as fallback_e:
+                    print(f"Fallback mapping also failed: {fallback_e}", flush=True)
+                    break
 
             # Generate ASCII frame with token-based characters
             frame = generate_ascii_frame(mapped_pairs, frame_count)
@@ -1393,8 +2283,12 @@ def main() -> None:
     """Entry point with error handling and setup.
 
     Validates environment and starts the animation loop with proper error handling.
+    Supports --debug flag for structural analysis debugging output.
     """
     try:
+        # Parse command line arguments
+        enable_debug = '--debug' in sys.argv or '-d' in sys.argv
+
         # Validate Python version
         if sys.version_info < (3, 8):
             print("Error: Python 3.8+ required.")
@@ -1408,8 +2302,8 @@ def main() -> None:
             print("Warning: Self-code reading not available in interactive mode.")
             print("Solution: Run script directly: python rotating_donut.py")
 
-        # Start animation
-        run_animation_loop()
+        # Start animation with debug mode
+        run_animation_loop(enable_debug=enable_debug)
 
     except Exception as e:
         print(f"Error: {e}")

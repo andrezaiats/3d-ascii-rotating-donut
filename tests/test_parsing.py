@@ -23,10 +23,16 @@ from rotating_donut import (
     read_self_code,
     tokenize_code,
     classify_importance,
+    classify_importance_with_structure,
+    analyze_structure,
     _is_builtin_function,
     _is_string_literal,
+    _find_containing_elements,
+    _calculate_structural_bonus,
     CodeToken,
-    ImportanceLevel
+    ImportanceLevel,
+    StructuralElement,
+    StructuralInfo
 )
 
 
@@ -961,6 +967,325 @@ def calculate_area(self, radius: float) -> float:
         self.assertGreater(importance_counts[ImportanceLevel.HIGH], 0, "Should have HIGH tokens")
         self.assertGreater(importance_counts[ImportanceLevel.MEDIUM], 0, "Should have MEDIUM tokens")
         self.assertGreater(importance_counts[ImportanceLevel.LOW], 0, "Should have LOW tokens")
+
+
+class TestStructuralAnalysis(unittest.TestCase):
+    """Test the analyze_structure() function for structural element identification."""
+
+    def test_analyze_structure_basic_function(self):
+        """Test identification of basic function definition."""
+        source = '''
+def calculate_area(radius):
+    return 3.14 * radius * radius
+'''
+        tokens = tokenize_code(source)
+        structural_info = analyze_structure(tokens)
+
+        # Should identify one function
+        self.assertEqual(structural_info.function_count, 1)
+        self.assertEqual(structural_info.class_count, 0)
+        self.assertEqual(len(structural_info.elements), 1)
+
+        # Check function properties
+        function_elem = structural_info.elements[0]
+        self.assertEqual(function_elem.element_type, 'function')
+        self.assertEqual(function_elem.name, 'calculate_area')
+        self.assertEqual(function_elem.nesting_depth, 0)
+        self.assertIsNone(function_elem.parent_element)
+        self.assertGreater(function_elem.complexity_score, 0)
+
+    def test_analyze_structure_basic_class(self):
+        """Test identification of basic class definition."""
+        source = '''
+class Circle:
+    def __init__(self, radius):
+        self.radius = radius
+
+    def area(self):
+        return 3.14 * self.radius ** 2
+'''
+        tokens = tokenize_code(source)
+        structural_info = analyze_structure(tokens)
+
+        # Should identify one class and two methods
+        self.assertEqual(structural_info.class_count, 1)
+        self.assertEqual(structural_info.function_count, 2)  # __init__ and area
+
+        # Find class and methods
+        class_elements = [e for e in structural_info.elements if e.element_type == 'class']
+        method_elements = [e for e in structural_info.elements if e.element_type == 'function']
+
+        self.assertEqual(len(class_elements), 1)
+        self.assertEqual(len(method_elements), 2)
+
+        # Check class properties
+        class_elem = class_elements[0]
+        self.assertEqual(class_elem.name, 'Circle')
+        self.assertEqual(class_elem.nesting_depth, 0)
+        self.assertGreater(class_elem.complexity_score, 2.0)  # Base class complexity
+
+        # Check method nesting
+        for method in method_elements:
+            self.assertEqual(method.nesting_depth, 1)  # Methods nested in class
+            self.assertEqual(method.parent_element, 'Circle')
+
+    def test_analyze_structure_imports(self):
+        """Test identification of import statements."""
+        source = '''
+import math
+from os import path
+import sys, os
+'''
+        tokens = tokenize_code(source)
+        structural_info = analyze_structure(tokens)
+
+        # Should identify import statements
+        self.assertEqual(structural_info.import_count, 3)
+        import_elements = [e for e in structural_info.elements if e.element_type == 'import']
+        self.assertEqual(len(import_elements), 3)
+
+        # Check import names
+        import_names = [e.name for e in import_elements]
+        self.assertIn('math', import_names)
+        self.assertIn('os', import_names)  # from os import path
+        self.assertIn('sys', import_names)  # import sys, os
+
+    def test_analyze_structure_nested_functions(self):
+        """Test identification of nested function structures."""
+        source = '''
+def outer_function(x):
+    def inner_function(y):
+        return y * 2
+    return inner_function(x)
+'''
+        tokens = tokenize_code(source)
+        structural_info = analyze_structure(tokens)
+
+        # Should identify two functions
+        self.assertEqual(structural_info.function_count, 2)
+
+        # Find outer and inner functions
+        functions = [e for e in structural_info.elements if e.element_type == 'function']
+        outer_func = next(f for f in functions if f.name == 'outer_function')
+        inner_func = next(f for f in functions if f.name == 'inner_function')
+
+        # Check nesting relationships
+        self.assertEqual(outer_func.nesting_depth, 0)
+        self.assertIsNone(outer_func.parent_element)
+        self.assertEqual(inner_func.nesting_depth, 1)
+        self.assertEqual(inner_func.parent_element, 'outer_function')
+
+    def test_analyze_structure_complexity_calculation(self):
+        """Test complexity calculation for different code structures."""
+        source = '''
+def simple_function():
+    return 42
+
+def complex_function(x):
+    if x > 0:
+        for i in range(x):
+            if i % 2 == 0:
+                try:
+                    result = i * 2
+                except ValueError:
+                    result = 0
+        return result
+    else:
+        return -1
+'''
+        tokens = tokenize_code(source)
+        structural_info = analyze_structure(tokens)
+
+        # Find functions
+        functions = {e.name: e for e in structural_info.elements if e.element_type == 'function'}
+
+        # Simple function should have lower complexity
+        simple_complexity = functions['simple_function'].complexity_score
+        complex_complexity = functions['complex_function'].complexity_score
+
+        self.assertGreater(complex_complexity, simple_complexity)
+        self.assertGreater(complex_complexity, 5.0)  # Should have significant complexity
+
+    def test_analyze_structure_empty_input(self):
+        """Test error handling for empty token list."""
+        with self.assertRaises(ValueError) as context:
+            analyze_structure([])
+
+        self.assertIn("Empty token list", str(context.exception))
+        self.assertIn("Solution:", str(context.exception))
+
+
+class TestEnhancedImportanceClassification(unittest.TestCase):
+    """Test the enhanced importance classification with structural context."""
+
+    def test_classify_importance_with_structure_basic(self):
+        """Test basic enhanced classification with structural context."""
+        source = '''
+def important_function():
+    x = 42
+    return x
+'''
+        tokens = tokenize_code(source)
+        structural_info = analyze_structure(tokens)
+
+        # Find a token within the function
+        function_tokens = [t for t in tokens if t.line >= 2 and t.line <= 4]
+        x_token = next(t for t in function_tokens if t.value == 'x' and t.type == 'IDENTIFIER')
+
+        # Test enhanced classification
+        base_importance = classify_importance(x_token)
+        enhanced_importance = classify_importance_with_structure(x_token, structural_info)
+
+        # Enhanced importance should be higher due to being in a function
+        self.assertGreaterEqual(enhanced_importance, base_importance)
+
+    def test_classify_importance_with_structure_class_context(self):
+        """Test enhanced classification for tokens within class context."""
+        source = '''
+class DataProcessor:
+    def process(self, data):
+        result = data * 2
+        return result
+'''
+        tokens = tokenize_code(source)
+        structural_info = analyze_structure(tokens)
+
+        # Find token within class method
+        method_tokens = [t for t in tokens if t.line >= 3 and t.line <= 5]
+        result_token = next(t for t in method_tokens if t.value == 'result' and t.type == 'IDENTIFIER')
+
+        # Test enhanced classification
+        enhanced_importance = classify_importance_with_structure(result_token, structural_info)
+        base_importance = classify_importance(result_token)
+
+        # Should have structural enhancement from being in class method
+        self.assertGreaterEqual(enhanced_importance, base_importance)
+
+    def test_classify_importance_with_structure_no_context(self):
+        """Test enhanced classification for tokens outside structural elements."""
+        source = '''
+# Top-level comment
+x = 42
+print(x)
+'''
+        tokens = tokenize_code(source)
+        structural_info = analyze_structure(tokens)
+
+        # Find top-level token
+        x_token = next(t for t in tokens if t.value == 'x' and t.type == 'IDENTIFIER')
+
+        # Test enhanced classification
+        base_importance = classify_importance(x_token)
+        enhanced_importance = classify_importance_with_structure(x_token, structural_info)
+
+        # Should be same as base importance (no structural context)
+        self.assertEqual(enhanced_importance, base_importance)
+
+    def test_classify_importance_with_structure_validation(self):
+        """Test input validation for enhanced classification."""
+        source = "def test(): pass"
+        tokens = tokenize_code(source)
+        structural_info = analyze_structure(tokens)
+
+        # Test invalid token parameter
+        with self.assertRaises(ValueError) as context:
+            classify_importance_with_structure("not_a_token", structural_info)
+        self.assertIn("Invalid token parameter", str(context.exception))
+
+        # Test invalid structural_info parameter
+        test_token = tokens[0]
+        with self.assertRaises(ValueError) as context:
+            classify_importance_with_structure(test_token, "not_structural_info")
+        self.assertIn("Invalid structural_info parameter", str(context.exception))
+
+
+class TestStructuralHelperFunctions(unittest.TestCase):
+    """Test helper functions for structural analysis."""
+
+    def test_find_containing_elements(self):
+        """Test finding structural elements that contain a given token."""
+        # Create test structural elements
+        class_element = StructuralElement(
+            element_type='class',
+            name='TestClass',
+            start_line=1,
+            end_line=10,
+            complexity_score=3.0,
+            nesting_depth=0
+        )
+
+        method_element = StructuralElement(
+            element_type='function',
+            name='test_method',
+            start_line=3,
+            end_line=7,
+            complexity_score=2.0,
+            nesting_depth=1,
+            parent_element='TestClass'
+        )
+
+        elements = [class_element, method_element]
+
+        # Create test token within method
+        test_token = CodeToken(
+            type='IDENTIFIER',
+            value='x',
+            importance=ImportanceLevel.MEDIUM,
+            line=5,
+            column=8,
+            ascii_char='-'
+        )
+
+        # Test finding containing elements
+        containing = _find_containing_elements(test_token, elements)
+
+        # Should find both class and method (method first due to deeper nesting)
+        self.assertEqual(len(containing), 2)
+        self.assertEqual(containing[0].name, 'test_method')  # Deeper nesting first
+        self.assertEqual(containing[1].name, 'TestClass')
+
+    def test_calculate_structural_bonus(self):
+        """Test calculation of structural importance bonus."""
+        # Create test structural elements with different types
+        function_element = StructuralElement(
+            element_type='function',
+            name='test_func',
+            start_line=1,
+            end_line=5,
+            complexity_score=2.0,
+            nesting_depth=0
+        )
+
+        class_element = StructuralElement(
+            element_type='class',
+            name='TestClass',
+            start_line=1,
+            end_line=10,
+            complexity_score=4.0,
+            nesting_depth=0
+        )
+
+        # Test structural info
+        structural_info = StructuralInfo(
+            elements=[function_element, class_element],
+            max_complexity=4.0,
+            total_lines=10,
+            import_count=0,
+            function_count=1,
+            class_count=1
+        )
+
+        # Test bonus calculation for function
+        func_bonus = _calculate_structural_bonus([function_element], structural_info)
+        self.assertGreater(func_bonus, 0.0)
+
+        # Test bonus calculation for class (should be higher)
+        class_bonus = _calculate_structural_bonus([class_element], structural_info)
+        self.assertGreater(class_bonus, func_bonus)
+
+        # Test empty elements
+        empty_bonus = _calculate_structural_bonus([], structural_info)
+        self.assertEqual(empty_bonus, 0.0)
 
 
 if __name__ == '__main__':
