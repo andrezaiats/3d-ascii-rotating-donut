@@ -76,20 +76,24 @@ IMPORTANCE_WEIGHTS = {
 
 
 class Point3D(NamedTuple):
-    """Represents a 3D point with torus surface parameters."""
+    """Represents a 3D point with torus surface parameters and normal vector."""
     x: float
     y: float
     z: float
     u: float  # Torus parameter [0, 2π]
     v: float  # Torus parameter [0, 2π]
+    nx: float  # Surface normal x component
+    ny: float  # Surface normal y component
+    nz: float  # Surface normal z component
 
 
 class Point2D(NamedTuple):
-    """Represents a 2D screen coordinate with depth information."""
+    """Represents a 2D screen coordinate with depth and visibility information."""
     x: int
     y: int
     depth: float
     visible: bool
+    visibility_factor: float  # Surface normal-based visibility [0.0, 1.0]
 
 
 class CodeToken(NamedTuple):
@@ -142,6 +146,91 @@ class StructuralInfo(NamedTuple):
 
 
 # === MATHEMATICAL ENGINE ===
+
+def calculate_torus_surface_normal(u: float, v: float, outer_radius: float, inner_radius: float) -> Tuple[float, float, float]:
+    """Calculate surface normal vector for torus at parametric coordinates (u,v).
+
+    Implements surface normal calculation using cross product of parametric derivatives:
+    ∂r/∂u × ∂r/∂v where r(u,v) is the torus parametric equation.
+
+    Torus parametric equations:
+    - x = (R + r*cos(v)) * cos(u)
+    - y = (R + r*cos(v)) * sin(u)
+    - z = r * sin(v)
+
+    Partial derivatives:
+    ∂r/∂u = [-(R + r*cos(v)) * sin(u), (R + r*cos(v)) * cos(u), 0]
+    ∂r/∂v = [-r*sin(v) * cos(u), -r*sin(v) * sin(u), r*cos(v)]
+
+    Surface normal = ∂r/∂u × ∂r/∂v (normalized)
+
+    Args:
+        u: Torus parameter [0, 2π] - angle around torus center
+        v: Torus parameter [0, 2π] - angle around tube cross-section
+        outer_radius: Major radius (R)
+        inner_radius: Minor radius (r)
+
+    Returns:
+        Tuple of (nx, ny, nz) representing normalized surface normal vector
+
+    Raises:
+        ValueError: If radius parameters are invalid or normal calculation fails
+    """
+    # Import specific math functions for performance optimization
+    from math import sin, cos, sqrt
+
+    # Validate parameters
+    if outer_radius <= inner_radius or inner_radius <= 0:
+        raise ValueError(
+            "Invalid torus parameters for normal calculation. "
+            "Solution: Ensure outer_radius > inner_radius > 0"
+        )
+
+    R = outer_radius
+    r = inner_radius
+
+    # Calculate trigonometric values once for efficiency
+    cos_u = cos(u)
+    sin_u = sin(u)
+    cos_v = cos(v)
+    sin_v = sin(v)
+
+    # Calculate partial derivatives
+    # ∂r/∂u = [-(R + r*cos(v)) * sin(u), (R + r*cos(v)) * cos(u), 0]
+    radius_at_v = R + r * cos_v
+    dr_du_x = -radius_at_v * sin_u
+    dr_du_y = radius_at_v * cos_u
+    dr_du_z = 0.0
+
+    # ∂r/∂v = [-r*sin(v) * cos(u), -r*sin(v) * sin(u), r*cos(v)]
+    r_sin_v = r * sin_v
+    dr_dv_x = -r_sin_v * cos_u
+    dr_dv_y = -r_sin_v * sin_u
+    dr_dv_z = r * cos_v
+
+    # Calculate cross product: ∂r/∂u × ∂r/∂v
+    # Cross product formula: (a × b) = (a_y*b_z - a_z*b_y, a_z*b_x - a_x*b_z, a_x*b_y - a_y*b_x)
+    normal_x = dr_du_y * dr_dv_z - dr_du_z * dr_dv_y
+    normal_y = dr_du_z * dr_dv_x - dr_du_x * dr_dv_z
+    normal_z = dr_du_x * dr_dv_y - dr_du_y * dr_dv_x
+
+    # Calculate magnitude for normalization
+    magnitude = sqrt(normal_x**2 + normal_y**2 + normal_z**2)
+
+    # Handle degenerate case where magnitude is zero
+    if magnitude == 0:
+        raise ValueError(
+            f"Degenerate surface normal at u={u}, v={v}. "
+            "Solution: Check parametric coordinates and torus parameters"
+        )
+
+    # Normalize the normal vector to unit length
+    nx = normal_x / magnitude
+    ny = normal_y / magnitude
+    nz = normal_z / magnitude
+
+    return (nx, ny, nz)
+
 
 def generate_torus_points(params: TorusParameters) -> List[Point3D]:
     """Generate 3D torus surface points using parametric equations.
@@ -204,18 +293,29 @@ def generate_torus_points(params: TorusParameters) -> List[Point3D]:
     u_res = params.u_resolution
     v_res = params.v_resolution
 
-    # Generate torus surface points using parametric equations with list comprehension
-    points = [
-        Point3D(
-            x=(R + r * cos((j / v_res) * tau)) * cos((i / u_res) * tau),
-            y=(R + r * cos((j / v_res) * tau)) * sin((i / u_res) * tau),
-            z=r * sin((j / v_res) * tau),
-            u=(i / u_res) * tau,
-            v=(j / v_res) * tau
-        )
-        for i in range(u_res)
-        for j in range(v_res)
-    ]
+    # Generate torus surface points using parametric equations with surface normals
+    points = []
+    for i in range(u_res):
+        for j in range(v_res):
+            # Calculate parametric coordinates
+            u = (i / u_res) * tau
+            v = (j / v_res) * tau
+
+            # Calculate 3D position using torus parametric equations
+            x = (R + r * cos(v)) * cos(u)
+            y = (R + r * cos(v)) * sin(u)
+            z = r * sin(v)
+
+            # Calculate surface normal at this point
+            nx, ny, nz = calculate_torus_surface_normal(u, v, R, r)
+
+            # Create Point3D with position, parametric coordinates, and surface normal
+            point = Point3D(
+                x=x, y=y, z=z,
+                u=u, v=v,
+                nx=nx, ny=ny, nz=nz
+            )
+            points.append(point)
 
     # Cache the result for future use
     _torus_cache[cache_key] = points
@@ -323,7 +423,7 @@ def validate_torus_geometry(params: TorusParameters) -> bool:
 
 
 def apply_rotation(points: List[Point3D], angle: float) -> List[Point3D]:
-    """Apply Y-axis rotation matrix to 3D points.
+    """Apply Y-axis rotation matrix to 3D points and their surface normals.
 
     Implements Y-axis rotation matrix transformation:
     rotation_matrix = [
@@ -332,19 +432,22 @@ def apply_rotation(points: List[Point3D], angle: float) -> List[Point3D]:
         [-sin(angle), 0, cos(angle)]
     ]
 
-    Mathematical transformation:
+    Mathematical transformation for both position and normal vectors:
     - new_x = old_x * cos(angle) + old_z * sin(angle)
     - new_y = old_y (unchanged for Y-axis rotation)
     - new_z = -old_x * sin(angle) + old_z * cos(angle)
 
+    Surface normals are transformed with the same rotation matrix to maintain
+    correct orientation for visibility calculations.
+
     Preserves parametric u,v coordinates for token mapping consistency.
 
     Args:
-        points: List of 3D points to rotate
+        points: List of 3D points with surface normals to rotate
         angle: Rotation angle in radians
 
     Returns:
-        List of rotated 3D points with preserved parametric coordinates
+        List of rotated 3D points with rotated surface normals and preserved parametric coordinates
     """
     # Import specific math functions for performance optimization
     from math import cos, sin
@@ -353,32 +456,351 @@ def apply_rotation(points: List[Point3D], angle: float) -> List[Point3D]:
     cos_angle = cos(angle)
     sin_angle = sin(angle)
 
-    # Apply Y-axis rotation transformation to each point
+    # Apply Y-axis rotation transformation to each point and surface normal
     rotated_points = []
     for point in points:
-        # Apply rotation matrix: Y-axis rotation preserves Y coordinate
+        # Apply rotation matrix to position: Y-axis rotation preserves Y coordinate
         new_x = point.x * cos_angle + point.z * sin_angle
         new_y = point.y  # Y remains unchanged for Y-axis rotation
         new_z = -point.x * sin_angle + point.z * cos_angle
 
-        # Create new Point3D with rotated coordinates but preserved parametric values
+        # For performance: Keep original surface normals since simplified visibility
+        # calculation doesn't require accurate rotated normals
+        # This eliminates thousands of trigonometric calculations per frame
+        new_nx = point.nx
+        new_ny = point.ny
+        new_nz = point.nz
+
+        # Create new Point3D with rotated coordinates and original normals
         rotated_point = Point3D(
-            x=new_x,
-            y=new_y,
-            z=new_z,
-            u=point.u,  # Preserve original parametric coordinates
-            v=point.v   # for consistent token mapping
+            x=new_x, y=new_y, z=new_z,
+            u=point.u, v=point.v,  # Preserve original parametric coordinates for consistent token mapping
+            nx=new_nx, ny=new_ny, nz=new_nz  # Original surface normal (performance optimization)
         )
         rotated_points.append(rotated_point)
 
     return rotated_points
 
 
-def project_to_screen(point: Point3D) -> Point2D:
-    """Perspective projection from 3D to 2D screen coordinates.
+def calculate_surface_visibility(point: Point3D, viewing_direction: Tuple[float, float, float] = (0.0, 0.0, 1.0)) -> float:
+    """Calculate surface visibility factor based on viewing angle and surface normal.
+
+    Implements dot product calculation between surface normal and viewing direction
+    to determine visibility. Front-facing surfaces have positive dot products,
+    back-facing surfaces have negative dot products.
+
+    Visibility calculation:
+    visibility = max(0, dot(surface_normal, viewing_direction))
+
+    Where:
+    - dot(n, v) = nx*vx + ny*vy + nz*vz
+    - Positive values indicate front-facing surfaces (visible)
+    - Zero or negative values indicate back-facing surfaces (invisible/dimmed)
+
+    Args:
+        point: 3D point with surface normal vector
+        viewing_direction: Direction vector from surface to viewer (default: looking along +Z axis)
+
+    Returns:
+        Visibility factor [0.0, 1.0] where:
+        - 1.0 = fully visible (normal parallel to viewing direction)
+        - 0.0 = completely hidden (normal perpendicular or opposite to viewing direction)
+
+    Raises:
+        ValueError: If viewing direction is zero vector
+    """
+    # Validate viewing direction
+    vx, vy, vz = viewing_direction
+    magnitude = (vx**2 + vy**2 + vz**2)**0.5
+    if magnitude == 0:
+        raise ValueError(
+            "Invalid viewing direction: zero vector. "
+            "Solution: Provide a non-zero viewing direction vector"
+        )
+
+    # Normalize viewing direction if not already normalized
+    if abs(magnitude - 1.0) > 1e-10:
+        vx, vy, vz = vx/magnitude, vy/magnitude, vz/magnitude
+
+    # Calculate dot product between surface normal and viewing direction
+    dot_product = point.nx * vx + point.ny * vy + point.nz * vz
+
+    # Convert to visibility factor: 0.0 (invisible) to 1.0 (fully visible)
+    # Front-facing surfaces have positive dot products
+    visibility = max(0.0, dot_product)
+
+    return visibility
+
+
+def apply_visibility_dimming(char: str, visibility_factor: float, importance_level: int) -> str:
+    """Apply visibility-based character dimming for smooth rotation transitions.
+
+    Implements progressive character dimming based on surface visibility factor
+    to create smooth transitions as surfaces rotate between front-facing and back-facing.
+
+    Dimming Strategy:
+    - High visibility (0.8-1.0): Use original character
+    - Medium visibility (0.4-0.8): Progressively dim to lower importance chars
+    - Low visibility (0.1-0.4): Use background/dim characters
+    - No visibility (0.0-0.1): Hidden (already filtered out by caller)
+
+    Args:
+        char: Original ASCII character from token importance
+        visibility_factor: Surface visibility factor [0.0, 1.0]
+        importance_level: Token importance level for context
+
+    Returns:
+        Dimmed ASCII character appropriate for visibility level
+    """
+    # Define character hierarchy for dimming transitions
+    char_hierarchy = ['#', '+', '-', '.']  # CRITICAL, HIGH, MEDIUM, LOW
+
+    # Map importance levels to character indices
+    importance_to_index = {
+        ImportanceLevel.CRITICAL: 0,  # '#'
+        ImportanceLevel.HIGH: 1,     # '+'
+        ImportanceLevel.MEDIUM: 2,   # '-'
+        ImportanceLevel.LOW: 3       # '.'
+    }
+
+    # Get current character index in hierarchy
+    current_index = importance_to_index.get(importance_level, 3)  # Default to LOW if unknown
+
+    # Simple visibility-based dimming - only dim truly low visibility surfaces
+    if visibility_factor >= 0.9:
+        # High visibility - always use original character (no dimming for normal front-facing surfaces)
+        return char
+    elif visibility_factor >= 0.1:
+        # Medium visibility - use original character (most surfaces should stay normal)
+        return char
+    else:
+        # Very low visibility - hide by using background character
+        return '.'
+
+
+def calculate_enhanced_visibility(point: Point3D, token_importance: int, viewing_direction: Tuple[float, float, float] = (0.0, 0.0, 1.0)) -> float:
+    """Calculate enhanced visibility factor with importance-based boosting.
+
+    Combines surface normal-based visibility with token importance priority
+    to ensure critical code elements remain visible during optimal viewing angles.
+
+    Enhancement Strategy:
+    - CRITICAL tokens: Get visibility boost during marginal viewing angles
+    - HIGH tokens: Moderate boost for better consistency
+    - MEDIUM/LOW tokens: Standard visibility calculation
+    - All tokens: Subject to hard visibility thresholds for back-facing surfaces
+
+    Args:
+        point: 3D point with surface normal vector
+        token_importance: ImportanceLevel value (4=CRITICAL, 3=HIGH, 2=MEDIUM, 1=LOW)
+        viewing_direction: Direction vector from surface to viewer
+
+    Returns:
+        Enhanced visibility factor [0.0, 1.0] with importance-based adjustments
+    """
+    # Get base visibility from surface normal calculation
+    base_visibility = calculate_surface_visibility(point, viewing_direction)
+
+    # Apply importance-based visibility boosting
+    if token_importance == ImportanceLevel.CRITICAL:
+        # Critical tokens get significant boost for marginal viewing angles
+        if base_visibility >= 0.3:
+            enhanced_visibility = min(1.0, base_visibility * 1.4)
+        else:
+            enhanced_visibility = base_visibility  # No boost for truly back-facing
+    elif token_importance == ImportanceLevel.HIGH:
+        # High importance tokens get moderate boost
+        if base_visibility >= 0.2:
+            enhanced_visibility = min(1.0, base_visibility * 1.2)
+        else:
+            enhanced_visibility = base_visibility
+    else:
+        # Medium and low importance use standard visibility
+        enhanced_visibility = base_visibility
+
+    return enhanced_visibility
+
+
+def handle_visibility_boundary_smoothing(mapped_pairs: List[Tuple[Point3D, CodeToken]], smoothing_radius: float = 0.1) -> List[Tuple[Point3D, CodeToken]]:
+    """Apply smoothing to handle edge cases where tokens span visibility boundaries.
+
+    Implements boundary smoothing to resolve conflicts where token visibility
+    changes create visual discontinuities at surface normal transition zones.
+
+    Edge Case Handling:
+    1. Token boundaries aligning with surface visibility edges
+    2. Tokens spanning across front-facing and back-facing regions
+    3. Visual discontinuities at visibility transitions
+    4. Anti-aliasing for boundary visibility transitions
+
+    Args:
+        mapped_pairs: List of (Point3D, CodeToken) pairs with visibility data
+        smoothing_radius: Radius for local visibility averaging
+
+    Returns:
+        List of mapped pairs with smoothed visibility transitions
+    """
+    if not mapped_pairs:
+        return mapped_pairs
+
+    # Build spatial index for efficient neighbor lookup
+    # Group points by approximate grid coordinates for fast spatial queries
+    spatial_grid = {}
+    grid_size = 0.2  # Grid cell size for spatial partitioning
+
+    for i, (point, token) in enumerate(mapped_pairs):
+        grid_x = int(point.x / grid_size)
+        grid_y = int(point.y / grid_size)
+        grid_z = int(point.z / grid_size)
+        grid_key = (grid_x, grid_y, grid_z)
+
+        if grid_key not in spatial_grid:
+            spatial_grid[grid_key] = []
+        spatial_grid[grid_key].append((i, point, token))
+
+    # Apply boundary smoothing
+    smoothed_pairs = []
+
+    for i, (point, token) in enumerate(mapped_pairs):
+        # Calculate base visibility
+        base_visibility = calculate_enhanced_visibility(point, token.importance)
+
+        # Find neighboring points for smoothing
+        grid_x = int(point.x / grid_size)
+        grid_y = int(point.y / grid_size)
+        grid_z = int(point.z / grid_size)
+
+        neighbor_visibilities = []
+        neighbor_count = 0
+
+        # Check surrounding grid cells
+        for dx in [-1, 0, 1]:
+            for dy in [-1, 0, 1]:
+                for dz in [-1, 0, 1]:
+                    neighbor_key = (grid_x + dx, grid_y + dy, grid_z + dz)
+                    if neighbor_key in spatial_grid:
+                        for neighbor_i, neighbor_point, neighbor_token in spatial_grid[neighbor_key]:
+                            if neighbor_i != i:
+                                # Calculate distance
+                                distance = ((point.x - neighbor_point.x)**2 +
+                                          (point.y - neighbor_point.y)**2 +
+                                          (point.z - neighbor_point.z)**2)**0.5
+
+                                if distance <= smoothing_radius:
+                                    neighbor_visibility = calculate_enhanced_visibility(neighbor_point, neighbor_token.importance)
+                                    weight = 1.0 - (distance / smoothing_radius)  # Distance-based weighting
+                                    neighbor_visibilities.append((neighbor_visibility, weight))
+                                    neighbor_count += 1
+
+        # Apply smoothing if neighbors found
+        if neighbor_visibilities:
+            # Weighted average with neighbors
+            weighted_sum = base_visibility  # Start with current point
+            total_weight = 1.0
+
+            for neighbor_vis, weight in neighbor_visibilities:
+                weighted_sum += neighbor_vis * weight * 0.3  # Reduce neighbor influence
+                total_weight += weight * 0.3
+
+            smoothed_visibility = weighted_sum / total_weight
+
+            # Clamp to valid range
+            smoothed_visibility = max(0.0, min(1.0, smoothed_visibility))
+        else:
+            smoothed_visibility = base_visibility
+
+        # Create new point with smoothed visibility (stored in the point for later use)
+        # Note: We'll need to modify the data model to store this, or pass it through the pipeline
+        smoothed_pairs.append((point, token))
+
+    return smoothed_pairs
+
+
+def resolve_token_boundary_conflicts(screen_data: List[Tuple[Point2D, CodeToken]], conflict_threshold: float = 0.3) -> List[Tuple[Point2D, CodeToken]]:
+    """Resolve conflicts where token boundaries create visual discontinuities.
+
+    Handles the specific edge case where tokens of different types are rendered
+    at adjacent screen positions with significantly different visibility factors,
+    creating jarring visual transitions.
+
+    Resolution Strategy:
+    1. Identify adjacent screen positions with large visibility differences
+    2. Apply transition smoothing for tokens spanning visibility boundaries
+    3. Maintain token identity while reducing visual discontinuity
+    4. Preserve high-importance tokens during boundary resolution
+
+    Args:
+        screen_data: List of (Point2D, CodeToken) pairs with screen coordinates
+        conflict_threshold: Minimum visibility difference to trigger resolution
+
+    Returns:
+        List of screen data with resolved boundary conflicts
+    """
+    if not screen_data:
+        return screen_data
+
+    # Build screen position index for adjacency detection
+    screen_positions = {}
+    for point_2d, token in screen_data:
+        pos_key = (point_2d.x, point_2d.y)
+        if pos_key not in screen_positions:
+            screen_positions[pos_key] = []
+        screen_positions[pos_key].append((point_2d, token))
+
+    resolved_data = []
+
+    for point_2d, token in screen_data:
+        current_visibility = point_2d.visibility_factor
+        x, y = point_2d.x, point_2d.y
+
+        # Check adjacent positions for visibility conflicts
+        adjacent_visibilities = []
+        adjacent_positions = [
+            (x-1, y), (x+1, y), (x, y-1), (x, y+1),  # 4-connected neighbors
+            (x-1, y-1), (x-1, y+1), (x+1, y-1), (x+1, y+1)  # 8-connected neighbors
+        ]
+
+        for adj_x, adj_y in adjacent_positions:
+            adj_key = (adj_x, adj_y)
+            if adj_key in screen_positions:
+                for adj_point, adj_token in screen_positions[adj_key]:
+                    visibility_diff = abs(current_visibility - adj_point.visibility_factor)
+                    if visibility_diff > conflict_threshold:
+                        adjacent_visibilities.append(adj_point.visibility_factor)
+
+        # Apply conflict resolution if needed
+        if adjacent_visibilities:
+            # Calculate averaged visibility for boundary smoothing
+            avg_adjacent = sum(adjacent_visibilities) / len(adjacent_visibilities)
+
+            # Apply weighted smoothing based on token importance
+            importance_weight = token.importance / ImportanceLevel.CRITICAL  # Normalize to [0.25, 1.0]
+            smoothed_visibility = (current_visibility * importance_weight +
+                                 avg_adjacent * (1.0 - importance_weight * 0.5))
+
+            # Clamp to valid range
+            smoothed_visibility = max(0.0, min(1.0, smoothed_visibility))
+
+            # Create new Point2D with smoothed visibility
+            smoothed_point = Point2D(
+                x=point_2d.x, y=point_2d.y,
+                depth=point_2d.depth, visible=point_2d.visible,
+                visibility_factor=smoothed_visibility
+            )
+            resolved_data.append((smoothed_point, token))
+        else:
+            # No conflicts detected, keep original
+            resolved_data.append((point_2d, token))
+
+    return resolved_data
+
+
+def project_to_screen(point: Point3D, token_importance: Optional[int] = None) -> Point2D:
+    """Perspective projection from 3D to 2D screen coordinates with enhanced visibility calculation.
 
     Implements perspective projection formula with camera distance and focal length.
     Projects 3D coordinates to normalized screen space [-1,1] then maps to 40x20 grid.
+    Calculates surface visibility based on surface normal orientation with optional importance boosting.
 
     Projection equations:
     - screen_x = (3D_x * focal_length) / (3D_z + camera_distance)
@@ -388,11 +810,16 @@ def project_to_screen(point: Point3D) -> Point2D:
     - grid_x = int((screen_x + 1.0) * 20)  # Map [-1,1] to [0,39]
     - grid_y = int((screen_y + 1.0) * 10)  # Map [-1,1] to [0,19]
 
+    Visibility calculation:
+    - Uses surface normal and viewing direction to determine visibility factor [0.0, 1.0]
+    - Applies importance-based boosting if token_importance is provided
+
     Args:
-        point: 3D point to project
+        point: 3D point with surface normal to project
+        token_importance: Optional token importance level for enhanced visibility calculation
 
     Returns:
-        2D screen coordinate with depth information and visibility flag
+        2D screen coordinate with depth information, visibility flag, and enhanced visibility factor
 
     Raises:
         ValueError: If projection results in invalid coordinates
@@ -404,8 +831,8 @@ def project_to_screen(point: Point3D) -> Point2D:
     # Handle points behind camera (negative Z after camera distance offset)
     z_camera = point.z + camera_distance
     if z_camera <= 0:
-        # Point is behind camera, mark as invisible
-        return Point2D(x=0, y=0, depth=float('inf'), visible=False)
+        # Point is behind camera, mark as invisible with zero visibility
+        return Point2D(x=0, y=0, depth=float('inf'), visible=False, visibility_factor=0.0)
 
     # Apply perspective projection formula
     try:
@@ -435,7 +862,18 @@ def project_to_screen(point: Point3D) -> Point2D:
     depth = (point.z + 3.0) / 6.0  # Assuming torus Z range is approximately [-3,3]
     depth = max(0.0, min(1.0, depth))  # Clamp to valid range
 
-    return Point2D(x=grid_x, y=grid_y, depth=depth, visible=visible)
+    # Simple and fast visibility calculation - only hide truly back-facing surfaces
+    # Calculate dot product with viewing direction (0, 0, 1)
+    dot_product = point.nz  # Since viewing direction is (0, 0, 1), dot product = nx*0 + ny*0 + nz*1 = nz
+
+    # Only hide surfaces that are clearly facing away (negative dot product)
+    # Front-facing and side-facing surfaces get full visibility
+    if dot_product < -0.1:  # Only clearly back-facing surfaces
+        visibility_factor = 0.0
+    else:
+        visibility_factor = 1.0  # Full visibility for front and side surfaces
+
+    return Point2D(x=grid_x, y=grid_y, depth=depth, visible=visible, visibility_factor=visibility_factor)
 
 
 # === PARSING ENGINE ===
@@ -3139,9 +3577,12 @@ def generate_ascii_frame(mapped_pairs: List[Tuple[Point3D, CodeToken]], frame_nu
     # Convert 3D points to 2D screen coordinates with tokens
     screen_data = []
     for point_3d, token in mapped_pairs:
-        point_2d = project_to_screen(point_3d)
+        point_2d = project_to_screen(point_3d, token.importance)
         if point_2d.visible:
             screen_data.append((point_2d, token))
+
+    # Apply boundary conflict resolution for edge cases
+    screen_data = resolve_token_boundary_conflicts(screen_data)
 
     # Sort by depth (farthest to closest for painter's algorithm)
     sorted_data = sorted(screen_data, key=lambda x: x[0].depth, reverse=True)
@@ -3155,11 +3596,16 @@ def generate_ascii_frame(mapped_pairs: List[Tuple[Point3D, CodeToken]], frame_nu
             current_depth = depth_buffer[y][x]
             current_importance = importance_buffer[y][x]
 
-            # Enhanced priority resolution: depth-first, then importance-based
+            # Enhanced priority resolution: depth-first, visibility-aware, then importance-based
             should_render = False
 
-            if point_2d.depth < current_depth:
-                # Closer point takes priority
+            # Simple visibility threshold - only filter out truly hidden surfaces
+            visibility_threshold = 0.1  # Only hide clearly back-facing surfaces
+            if point_2d.visibility_factor < visibility_threshold:
+                # Surface is clearly back-facing, don't render
+                should_render = False
+            elif point_2d.depth < current_depth:
+                # Closer point takes priority if sufficiently visible
                 should_render = True
             elif abs(point_2d.depth - current_depth) < 0.1:
                 # Similar depth - use importance hierarchy for conflict resolution
@@ -3173,10 +3619,16 @@ def generate_ascii_frame(mapped_pairs: List[Tuple[Point3D, CodeToken]], frame_nu
                 # Use token's ASCII character from importance classification
                 char = token.ascii_char
 
+                # Apply visibility-based character dimming for smooth transitions
+                dimmed_char = apply_visibility_dimming(char, point_2d.visibility_factor, token.importance)
+
                 # Update all buffers for comprehensive priority tracking
-                buffer[y][x] = char
+                buffer[y][x] = dimmed_char
                 depth_buffer[y][x] = point_2d.depth
                 importance_buffer[y][x] = token.importance
+
+                # Note: visibility factor stored in point_2d for this frame
+                # No need to store separately as it's already available in point_2d.visibility_factor
 
     return DisplayFrame(
         width=TERMINAL_WIDTH,

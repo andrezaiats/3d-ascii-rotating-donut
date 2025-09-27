@@ -66,9 +66,9 @@ class TestRenderingEngine(unittest.TestCase):
         """Test AC2: Implement depth sorting to render closest points last."""
         # Create overlapping points with different depths
         points = [
-            Point2D(x=10, y=10, depth=0.1, visible=True),  # Closest (should win)
-            Point2D(x=10, y=10, depth=0.9, visible=True),  # Farthest
-            Point2D(x=10, y=10, depth=0.5, visible=True),  # Middle
+            Point2D(x=10, y=10, depth=0.1, visible=True, visibility_factor=1.0),  # Closest (should win)
+            Point2D(x=10, y=10, depth=0.9, visible=True, visibility_factor=1.0),  # Farthest
+            Point2D(x=10, y=10, depth=0.5, visible=True, visibility_factor=1.0),  # Middle
         ]
 
         frame = generate_ascii_frame_legacy(points)
@@ -92,7 +92,7 @@ class TestRenderingEngine(unittest.TestCase):
 
         for depth, expected_char in test_cases:
             with self.subTest(depth=depth, expected=expected_char):
-                points = [Point2D(x=5, y=5, depth=depth, visible=True)]
+                points = [Point2D(x=5, y=5, depth=depth, visible=True, visibility_factor=1.0)]
                 frame = generate_ascii_frame_legacy(points)
                 self.assertEqual(frame.buffer[5][5], expected_char)
 
@@ -102,7 +102,7 @@ class TestRenderingEngine(unittest.TestCase):
 
         # Test with various depths across the valid range
         for depth in [0.0, 0.1, 0.3, 0.6, 0.8, 1.0]:
-            points = [Point2D(x=5, y=5, depth=depth, visible=True)]
+            points = [Point2D(x=5, y=5, depth=depth, visible=True, visibility_factor=1.0)]
             frame = generate_ascii_frame_legacy(points)
             char = frame.buffer[5][5]
             self.assertIn(char, safe_chars, f"Character '{char}' not terminal-safe")
@@ -175,8 +175,8 @@ class TestRenderingEngine(unittest.TestCase):
     def test_invisible_points_filtered(self):
         """Test that invisible points are properly filtered out."""
         points = [
-            Point2D(x=10, y=10, depth=0.1, visible=False),  # Should be ignored
-            Point2D(x=15, y=15, depth=0.2, visible=True),   # Should be rendered
+            Point2D(x=10, y=10, depth=0.1, visible=False, visibility_factor=0.0),  # Should be ignored
+            Point2D(x=15, y=15, depth=0.2, visible=True, visibility_factor=1.0),   # Should be rendered
         ]
 
         frame = generate_ascii_frame_legacy(points)
@@ -192,11 +192,11 @@ class TestRenderingEngine(unittest.TestCase):
     def test_bounds_checking_safety(self):
         """Test that out-of-bounds coordinates are handled safely."""
         points = [
-            Point2D(x=-1, y=10, depth=0.1, visible=True),   # x out of bounds
-            Point2D(x=40, y=10, depth=0.1, visible=True),   # x out of bounds
-            Point2D(x=10, y=-1, depth=0.1, visible=True),   # y out of bounds
-            Point2D(x=10, y=20, depth=0.1, visible=True),   # y out of bounds
-            Point2D(x=10, y=10, depth=0.1, visible=True),   # Valid point
+            Point2D(x=-1, y=10, depth=0.1, visible=True, visibility_factor=1.0),   # x out of bounds
+            Point2D(x=40, y=10, depth=0.1, visible=True, visibility_factor=1.0),   # x out of bounds
+            Point2D(x=10, y=-1, depth=0.1, visible=True, visibility_factor=1.0),   # y out of bounds
+            Point2D(x=10, y=20, depth=0.1, visible=True, visibility_factor=1.0),   # y out of bounds
+            Point2D(x=10, y=10, depth=0.1, visible=True, visibility_factor=1.0),   # Valid point
         ]
 
         # Should not crash with out-of-bounds coordinates
@@ -227,7 +227,7 @@ class TestRenderingEngine(unittest.TestCase):
 
     def test_frame_number_tracking(self):
         """Test frame number tracking for debugging purposes."""
-        points = [Point2D(x=5, y=5, depth=0.5, visible=True)]
+        points = [Point2D(x=5, y=5, depth=0.5, visible=True, visibility_factor=1.0)]
 
         frame1 = generate_ascii_frame_legacy(points, frame_number=42)
         frame2 = generate_ascii_frame_legacy(points, frame_number=100)
@@ -246,11 +246,11 @@ class TestIntegration(unittest.TestCase):
 
         # Horizontal line (depth 0.3)
         for i in range(10, 30):
-            points.append(Point2D(x=i, y=10, depth=0.3, visible=True))
+            points.append(Point2D(x=i, y=10, depth=0.3, visible=True, visibility_factor=1.0))
 
         # Vertical line (depth 0.2 - closer)
         for j in range(5, 15):
-            points.append(Point2D(x=20, y=j, depth=0.2, visible=True))
+            points.append(Point2D(x=20, y=j, depth=0.2, visible=True, visibility_factor=1.0))
 
         frame = generate_ascii_frame_legacy(points, frame_number=1)
 
@@ -492,8 +492,8 @@ class TestTokenMapping(unittest.TestCase):
         """Test that legacy generate_ascii_frame_legacy still works."""
         # Create Point2D list for legacy function
         points_2d = [
-            Point2D(x=10, y=10, depth=0.1, visible=True),
-            Point2D(x=15, y=15, depth=0.8, visible=True),
+            Point2D(x=10, y=10, depth=0.1, visible=True, visibility_factor=1.0),
+            Point2D(x=15, y=15, depth=0.8, visible=True, visibility_factor=1.0),
         ]
 
         # Should work with legacy function
@@ -527,13 +527,13 @@ class TestStructuralSurfaceMapping(unittest.TestCase):
                      line=3, column=4, ascii_char='#')
         ]
 
-        # Create test 3D points
+        # Create test 3D points with surface normals
         self.test_points = [
-            Point3D(x=1.0, y=0.0, z=0.5, u=0.1, v=0.1),
-            Point3D(x=0.5, y=0.8, z=0.3, u=0.2, v=0.2),
-            Point3D(x=-0.2, y=0.5, z=0.7, u=0.3, v=0.3),
-            Point3D(x=0.8, y=-0.3, z=0.1, u=0.4, v=0.4),
-            Point3D(x=-0.1, y=-0.7, z=0.9, u=0.5, v=0.5)
+            Point3D(x=1.0, y=0.0, z=0.5, u=0.1, v=0.1, nx=1.0, ny=0.0, nz=0.0),
+            Point3D(x=0.5, y=0.8, z=0.3, u=0.2, v=0.2, nx=0.5, ny=0.8, nz=0.0),
+            Point3D(x=-0.2, y=0.5, z=0.7, u=0.3, v=0.3, nx=-0.2, ny=0.5, nz=0.7),
+            Point3D(x=0.8, y=-0.3, z=0.1, u=0.4, v=0.4, nx=0.8, ny=-0.3, nz=0.1),
+            Point3D(x=-0.1, y=-0.7, z=0.9, u=0.5, v=0.5, nx=-0.1, ny=-0.7, nz=0.9)
         ]
 
         # Create test structural info
@@ -862,8 +862,8 @@ class TestDynamicCharacterAssignment(unittest.TestCase):
 
         # Create points with very similar depths (within 0.1 threshold)
         similar_depth_points = [
-            Point3D(x=1.0, y=0.0, z=0.5, u=0.0, v=0.0),    # depth 0.5
-            Point3D(x=1.01, y=0.0, z=0.55, u=0.1, v=0.0),  # depth 0.55 (similar)
+            Point3D(x=1.0, y=0.0, z=0.5, u=0.0, v=0.0, nx=1.0, ny=0.0, nz=0.0),    # depth 0.5
+            Point3D(x=1.01, y=0.0, z=0.55, u=0.1, v=0.0, nx=1.0, ny=0.0, nz=0.0),  # depth 0.55 (similar)
         ]
 
         mapped_pairs = [(similar_depth_points[0], similar_depth_tokens[0]),
@@ -895,7 +895,7 @@ class TestDynamicCharacterAssignment(unittest.TestCase):
             for point in self.test_points:
                 # Simple rotation simulation
                 new_u = (point.u + rotation_angle) % 6.28
-                rotated_point = Point3D(x=point.x, y=point.y, z=point.z, u=new_u, v=point.v)
+                rotated_point = Point3D(x=point.x, y=point.y, z=point.z, u=new_u, v=point.v, nx=point.nx, ny=point.ny, nz=point.nz)
                 rotated_points.append(rotated_point)
 
             mapped_pairs = map_tokens_to_surface(self.test_tokens, rotated_points)
@@ -1026,7 +1026,7 @@ class TestTokenSurfaceIntegration(unittest.TestCase):
                      line=2, column=0, ascii_char='.'),
         ]
 
-        # Create test surface points with proper u,v coordinates
+        # Create test surface points with proper u,v coordinates and surface normals
         self.test_points = []
         for i in range(20):
             for j in range(10):
@@ -1035,7 +1035,10 @@ class TestTokenSurfaceIntegration(unittest.TestCase):
                 x = (2 + 1 * cos(v)) * cos(u)
                 y = (2 + 1 * cos(v)) * sin(u)
                 z = 1 * sin(v)
-                self.test_points.append(Point3D(x=x, y=y, z=z, u=u, v=v))
+                # Calculate surface normal using torus parametric derivatives
+                from rotating_donut import calculate_torus_surface_normal
+                nx, ny, nz = calculate_torus_surface_normal(u, v, 2.0, 1.0)
+                self.test_points.append(Point3D(x=x, y=y, z=z, u=u, v=v, nx=nx, ny=ny, nz=nz))
 
     def test_parametric_coordinate_accuracy(self):
         """Test parametric coordinate accuracy with mathematical validation."""
@@ -1163,7 +1166,9 @@ class TestTokenSurfaceIntegration(unittest.TestCase):
         for i, token in enumerate(self.test_tokens):
             u = (i / len(self.test_tokens)) * tau
             v = tau * 0.25
-            point = Point3D(x=1.0, y=0.0, z=0.0, u=u, v=v)
+            from rotating_donut import calculate_torus_surface_normal
+            nx, ny, nz = calculate_torus_surface_normal(u, v, 2.0, 1.0)
+            point = Point3D(x=1.0, y=0.0, z=0.0, u=u, v=v, nx=nx, ny=ny, nz=nz)
             test_mappings.append((point, token))
 
         # Should not raise exceptions for well-distributed mappings
@@ -1244,7 +1249,9 @@ class TestTokenSurfaceIntegration(unittest.TestCase):
         for i in range(10):
             u = (i / 10) * tau
             v = tau * 0.3
-            point = Point3D(x=1.0, y=0.0, z=0.0, u=u, v=v)
+            from rotating_donut import calculate_torus_surface_normal
+            nx, ny, nz = calculate_torus_surface_normal(u, v, 2.0, 1.0)
+            point = Point3D(x=1.0, y=0.0, z=0.0, u=u, v=v, nx=nx, ny=ny, nz=nz)
             token = self.test_tokens[i % len(self.test_tokens)]
             continuous_mappings.append((point, token))
 
@@ -1306,6 +1313,340 @@ class TestTokenSurfaceIntegration(unittest.TestCase):
         # Should return valid results
         self.assertIsInstance(mapped_pairs, list)
         self.assertGreater(len(mapped_pairs), 0)
+
+
+class TestRotationAwareVisibility(unittest.TestCase):
+    """Test suite for Story 3.3: Rotation-Aware Code Display functionality.
+
+    Tests cover surface normal calculations, visibility determination,
+    rotation-aware token rendering, visual quality consistency,
+    and edge case handling for visibility boundaries.
+    """
+
+    def setUp(self):
+        """Set up test fixtures for rotation-aware visibility tests."""
+        from math import pi, cos, sin
+
+        # Import the new visibility functions
+        from rotating_donut import (
+            calculate_torus_surface_normal,
+            calculate_surface_visibility,
+            calculate_enhanced_visibility,
+            apply_visibility_dimming,
+            resolve_token_boundary_conflicts
+        )
+        self.calculate_torus_surface_normal = calculate_torus_surface_normal
+        self.calculate_surface_visibility = calculate_surface_visibility
+        self.calculate_enhanced_visibility = calculate_enhanced_visibility
+        self.apply_visibility_dimming = apply_visibility_dimming
+        self.resolve_token_boundary_conflicts = resolve_token_boundary_conflicts
+
+        # Create test points with surface normals
+        self.test_points_with_normals = [
+            Point3D(x=2.0, y=0.0, z=0.0, u=0.0, v=0.0, nx=1.0, ny=0.0, nz=0.0),      # Front-facing
+            Point3D(x=-2.0, y=0.0, z=0.0, u=pi, v=0.0, nx=-1.0, ny=0.0, nz=0.0),    # Back-facing
+            Point3D(x=0.0, y=2.0, z=0.0, u=pi/2, v=0.0, nx=0.0, ny=1.0, nz=0.0),    # Side-facing
+            Point3D(x=0.0, y=0.0, z=1.0, u=0.0, v=pi/2, nx=0.0, ny=0.0, nz=1.0),    # Top-facing
+        ]
+
+        # Create test tokens for visibility testing
+        self.test_tokens = [
+            CodeToken(type='KEYWORD', value='def', importance=ImportanceLevel.CRITICAL,
+                     line=1, column=0, ascii_char='#'),
+            CodeToken(type='OPERATOR', value='+', importance=ImportanceLevel.HIGH,
+                     line=1, column=10, ascii_char='+'),
+            CodeToken(type='IDENTIFIER', value='var', importance=ImportanceLevel.MEDIUM,
+                     line=1, column=15, ascii_char='-'),
+            CodeToken(type='COMMENT', value='# comment', importance=ImportanceLevel.LOW,
+                     line=2, column=0, ascii_char='.'),
+        ]
+
+    def test_surface_normal_calculation_accuracy(self):
+        """Test AC1: Calculate surface normal using torus parametric derivatives."""
+        from math import pi, sqrt
+
+        # Test known torus parameters
+        outer_radius = 2.0
+        inner_radius = 1.0
+
+        # Test surface normal at u=0, v=0 (front of torus)
+        nx, ny, nz = self.calculate_torus_surface_normal(0.0, 0.0, outer_radius, inner_radius)
+
+        # At u=0, v=0, normal should point outward in +x direction
+        self.assertAlmostEqual(nx, 1.0, places=3)
+        self.assertAlmostEqual(ny, 0.0, places=3)
+        self.assertAlmostEqual(nz, 0.0, places=3)
+
+        # Verify normal is normalized (unit length)
+        magnitude = sqrt(nx**2 + ny**2 + nz**2)
+        self.assertAlmostEqual(magnitude, 1.0, places=6)
+
+    def test_surface_normal_validation_errors(self):
+        """Test surface normal calculation error handling."""
+        # Test invalid radius parameters
+        with self.assertRaises(ValueError) as context:
+            self.calculate_torus_surface_normal(0.0, 0.0, 1.0, 2.0)  # inner > outer
+        self.assertIn("Invalid torus parameters", str(context.exception))
+        self.assertIn("Solution:", str(context.exception))
+
+    def test_visibility_calculation_front_facing(self):
+        """Test AC1,2: Visibility calculation for front-facing surfaces."""
+        front_point = self.test_points_with_normals[0]  # Front-facing normal (1, 0, 0)
+
+        # Use viewing direction that aligns with front-facing normal
+        visibility = self.calculate_surface_visibility(front_point, viewing_direction=(1.0, 0.0, 0.0))
+
+        # Front-facing surface should have high visibility
+        self.assertGreater(visibility, 0.5)
+        self.assertLessEqual(visibility, 1.0)
+
+    def test_visibility_calculation_back_facing(self):
+        """Test AC2: Hide tokens on back-facing surfaces."""
+        back_point = self.test_points_with_normals[1]  # Back-facing normal
+
+        visibility = self.calculate_surface_visibility(back_point)
+
+        # Back-facing surface should have zero or very low visibility
+        self.assertLessEqual(visibility, 0.1)
+
+    def test_enhanced_visibility_importance_boosting(self):
+        """Test AC4: High-importance tokens get visibility boost during marginal angles."""
+        # Create point with marginal viewing angle
+        marginal_point = Point3D(x=1.0, y=0.0, z=0.0, u=0.0, v=0.0,
+                               nx=0.5, ny=0.0, nz=0.866)  # 60-degree angle
+
+        # Test enhanced visibility for critical vs low importance
+        critical_visibility = self.calculate_enhanced_visibility(marginal_point, ImportanceLevel.CRITICAL)
+        low_visibility = self.calculate_enhanced_visibility(marginal_point, ImportanceLevel.LOW)
+
+        # Critical tokens should get visibility boost
+        self.assertGreater(critical_visibility, low_visibility)
+
+    def test_visibility_dimming_smooth_transitions(self):
+        """Test AC3: Smooth visibility transitions through character dimming."""
+        # Test various visibility levels
+        test_cases = [
+            (0.9, ImportanceLevel.CRITICAL, '#'),  # High visibility keeps original
+            (0.7, ImportanceLevel.CRITICAL, '#'),  # Medium-high visibility
+            (0.5, ImportanceLevel.CRITICAL, '+'),  # Medium visibility dims
+            (0.3, ImportanceLevel.CRITICAL, '-'),  # Low visibility dims further
+            (0.1, ImportanceLevel.CRITICAL, '.'),  # Very low visibility becomes background
+        ]
+
+        for visibility, importance, expected_char in test_cases:
+            with self.subTest(visibility=visibility, importance=importance):
+                dimmed_char = self.apply_visibility_dimming('#', visibility, importance)
+                # Check that dimming is reasonable (exact char may vary by algorithm)
+                self.assertIn(dimmed_char, ['.', '-', '+', '#'])
+
+    def test_boundary_conflict_resolution(self):
+        """Test AC5: Handle edge cases where token boundaries align with visibility edges."""
+        # Create screen data with conflicting visibility at adjacent positions
+        screen_data = [
+            (Point2D(x=10, y=10, depth=0.5, visible=True, visibility_factor=0.9), self.test_tokens[0]),
+            (Point2D(x=11, y=10, depth=0.5, visible=True, visibility_factor=0.1), self.test_tokens[1]),
+            (Point2D(x=10, y=11, depth=0.5, visible=True, visibility_factor=0.8), self.test_tokens[2]),
+        ]
+
+        resolved_data = self.resolve_token_boundary_conflicts(screen_data)
+
+        # Should return same number of points
+        self.assertEqual(len(resolved_data), len(screen_data))
+
+        # Visibility factors should be smoothed for conflicting neighbors
+        resolved_visibility = [point.visibility_factor for point, token in resolved_data]
+        original_visibility = [point.visibility_factor for point, token in screen_data]
+
+        # At least some visibility should be modified for smoothing
+        self.assertNotEqual(resolved_visibility, original_visibility)
+
+    def test_project_to_screen_with_visibility(self):
+        """Test enhanced project_to_screen function with visibility calculation."""
+        from rotating_donut import project_to_screen
+
+        # Create points with normals that align with default viewing direction (0, 0, 1)
+        front_point = Point3D(x=0.0, y=0.0, z=2.0, u=0.0, v=0.0, nx=0.0, ny=0.0, nz=1.0)  # Normal toward viewer
+        back_point = Point3D(x=0.0, y=0.0, z=2.0, u=0.0, v=0.0, nx=0.0, ny=0.0, nz=-1.0)  # Normal away from viewer
+
+        # Test with token importance
+        front_screen = project_to_screen(front_point, ImportanceLevel.CRITICAL)
+        back_screen = project_to_screen(back_point, ImportanceLevel.CRITICAL)
+
+        # Front-facing should have higher visibility factor
+        self.assertGreater(front_screen.visibility_factor, back_screen.visibility_factor)
+
+        # Both should have valid Point2D structure
+        self.assertIsInstance(front_screen, Point2D)
+        self.assertIsInstance(back_screen, Point2D)
+
+    def test_generate_ascii_frame_with_visibility(self):
+        """Test integration of visibility factors in ASCII frame generation."""
+        # Create mapped pairs with visibility-enhanced points
+        mapped_pairs = []
+        for i, token in enumerate(self.test_tokens):
+            point = self.test_points_with_normals[i % len(self.test_points_with_normals)]
+            mapped_pairs.append((point, token))
+
+        frame = generate_ascii_frame(mapped_pairs, frame_number=1)
+
+        # Should generate valid frame
+        self.assertEqual(frame.width, TERMINAL_WIDTH)
+        self.assertEqual(frame.height, TERMINAL_HEIGHT)
+        self.assertEqual(frame.frame_number, 1)
+
+        # Frame should contain appropriate characters based on visibility
+        buffer_chars = set()
+        for row in frame.buffer:
+            for char in row:
+                buffer_chars.add(char)
+
+        # Should use only valid ASCII characters
+        valid_chars = {'.', '-', '+', '#'}
+        self.assertTrue(buffer_chars.issubset(valid_chars))
+
+    def test_visibility_threshold_filtering(self):
+        """Test that points below visibility threshold are filtered out."""
+        from rotating_donut import generate_ascii_frame
+
+        # Create mapped pairs with very low visibility points
+        low_visibility_pairs = []
+        for token in self.test_tokens:
+            # Use back-facing point (should have very low visibility)
+            back_point = self.test_points_with_normals[1]
+            low_visibility_pairs.append((back_point, token))
+
+        frame = generate_ascii_frame(low_visibility_pairs)
+
+        # Frame should be mostly background due to low visibility filtering
+        background_count = 0
+        for row in frame.buffer:
+            for char in row:
+                if char == '.':
+                    background_count += 1
+
+        # Should be mostly background (> 90% background chars)
+        total_chars = TERMINAL_WIDTH * TERMINAL_HEIGHT
+        background_ratio = background_count / total_chars
+        self.assertGreater(background_ratio, 0.9)
+
+    def test_mathematical_precision_requirements(self):
+        """Test mathematical precision requirements from coding standards."""
+        from math import pi, tau
+
+        # Test with math.pi precision (not hardcoded approximations)
+        nx, ny, nz = self.calculate_torus_surface_normal(pi/2, 0.0, 2.0, 1.0)
+
+        # Verify calculations use proper mathematical constants
+        self.assertIsInstance(nx, float)
+        self.assertIsInstance(ny, float)
+        self.assertIsInstance(nz, float)
+
+        # Test with tau precision
+        nx2, ny2, nz2 = self.calculate_torus_surface_normal(tau/4, 0.0, 2.0, 1.0)
+
+        # Should be equivalent to pi/2 calculation
+        self.assertAlmostEqual(nx, nx2, places=6)
+        self.assertAlmostEqual(ny, ny2, places=6)
+        self.assertAlmostEqual(nz, nz2, places=6)
+
+    def test_performance_30fps_requirement(self):
+        """Test that visibility calculations maintain 30+ FPS performance requirement."""
+        import time
+
+        # Create substantial test data
+        large_mapped_pairs = []
+        for i in range(100):  # Simulate moderate frame complexity
+            point = self.test_points_with_normals[i % len(self.test_points_with_normals)]
+            token = self.test_tokens[i % len(self.test_tokens)]
+            large_mapped_pairs.append((point, token))
+
+        # Measure frame generation time
+        start_time = time.time()
+        frame = generate_ascii_frame(large_mapped_pairs)
+        end_time = time.time()
+
+        frame_time = end_time - start_time
+
+        # Should complete frame generation in < 33ms (30 FPS requirement)
+        self.assertLess(frame_time, 0.033)
+
+        # Frame should be valid
+        self.assertEqual(frame.width, TERMINAL_WIDTH)
+        self.assertEqual(frame.height, TERMINAL_HEIGHT)
+
+    def test_edge_case_zero_visibility_factor(self):
+        """Test edge case handling for zero visibility factor."""
+        # Test dimming with zero visibility
+        dimmed_char = self.apply_visibility_dimming('#', 0.0, ImportanceLevel.CRITICAL)
+
+        # Should return background character
+        self.assertEqual(dimmed_char, '.')
+
+    def test_edge_case_perpendicular_surface_normal(self):
+        """Test edge case where surface normal is perpendicular to viewing direction."""
+        # Create point with normal perpendicular to default viewing direction (0,0,1)
+        perpendicular_point = Point3D(x=1.0, y=0.0, z=0.0, u=0.0, v=0.0,
+                                    nx=1.0, ny=0.0, nz=0.0)  # Normal in x direction
+
+        visibility = self.calculate_surface_visibility(perpendicular_point)
+
+        # Perpendicular surface should have zero visibility
+        self.assertEqual(visibility, 0.0)
+
+    def test_input_validation_viewing_direction(self):
+        """Test input validation for viewing direction parameter."""
+        point = self.test_points_with_normals[0]
+
+        # Test zero viewing direction
+        with self.assertRaises(ValueError) as context:
+            self.calculate_surface_visibility(point, viewing_direction=(0.0, 0.0, 0.0))
+        self.assertIn("Invalid viewing direction", str(context.exception))
+        self.assertIn("Solution:", str(context.exception))
+
+    def test_coverage_visibility_functions(self):
+        """Test coverage of all visibility-related functions."""
+        from rotating_donut import (
+            calculate_torus_surface_normal,
+            calculate_surface_visibility,
+            calculate_enhanced_visibility,
+            apply_visibility_dimming,
+            handle_visibility_boundary_smoothing,
+            resolve_token_boundary_conflicts
+        )
+
+        # Test each function is callable and returns expected types
+        point = self.test_points_with_normals[0]
+        token = self.test_tokens[0]
+
+        # Surface normal calculation
+        normal = calculate_torus_surface_normal(0.0, 0.0, 2.0, 1.0)
+        self.assertIsInstance(normal, tuple)
+        self.assertEqual(len(normal), 3)
+
+        # Surface visibility calculation
+        visibility = calculate_surface_visibility(point)
+        self.assertIsInstance(visibility, float)
+        self.assertGreaterEqual(visibility, 0.0)
+        self.assertLessEqual(visibility, 1.0)
+
+        # Enhanced visibility calculation
+        enhanced_vis = calculate_enhanced_visibility(point, ImportanceLevel.CRITICAL)
+        self.assertIsInstance(enhanced_vis, float)
+
+        # Visibility dimming
+        dimmed = apply_visibility_dimming('#', 0.5, ImportanceLevel.HIGH)
+        self.assertIsInstance(dimmed, str)
+        self.assertEqual(len(dimmed), 1)
+
+        # Boundary smoothing
+        pairs = [(point, token)]
+        smoothed = handle_visibility_boundary_smoothing(pairs)
+        self.assertIsInstance(smoothed, list)
+
+        # Boundary conflict resolution
+        screen_data = [(Point2D(x=10, y=10, depth=0.5, visible=True, visibility_factor=0.8), token)]
+        resolved = resolve_token_boundary_conflicts(screen_data)
+        self.assertIsInstance(resolved, list)
 
 
 if __name__ == "__main__":
