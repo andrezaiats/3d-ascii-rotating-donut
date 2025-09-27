@@ -20,7 +20,9 @@ sys.path.insert(0, str(project_root))
 from rotating_donut import (
     get_script_path,
     validate_file_content,
-    read_self_code
+    read_self_code,
+    tokenize_code,
+    CodeToken
 )
 
 
@@ -275,6 +277,291 @@ class TestErrorMessageFormat(unittest.TestCase):
             validate_file_content("test.py", "invalid python syntax !!!!")
         except ValueError as e:
             self.assertIn("Solution:", str(e))
+
+
+class TestTokenizeCode(unittest.TestCase):
+    """Test the tokenize_code() function for comprehensive token parsing."""
+
+    def test_tokenize_simple_code(self):
+        """Test tokenization of simple Python code."""
+        source = "def hello():\n    print('world')"
+        tokens = tokenize_code(source)
+
+        self.assertIsInstance(tokens, list)
+        self.assertGreater(len(tokens), 0)
+
+        # Check that we have tokens of different types
+        token_types = [token.type for token in tokens]
+        self.assertIn('KEYWORD', token_types)  # 'def'
+        self.assertIn('IDENTIFIER', token_types)  # 'hello', 'print'
+        self.assertIn('LITERAL', token_types)  # 'world'
+        self.assertIn('OPERATOR', token_types)  # '(', ')', ':'
+
+    def test_tokenize_keyword_classification(self):
+        """Test that Python keywords are correctly classified as HIGH importance."""
+        source = "def class if for while try except import"
+        tokens = tokenize_code(source)
+
+        keyword_tokens = [token for token in tokens if token.type == 'KEYWORD']
+        self.assertGreater(len(keyword_tokens), 0)
+
+        for token in keyword_tokens:
+            self.assertEqual(token.importance, 'HIGH')
+            self.assertEqual(token.ascii_char, '#')
+
+    def test_tokenize_operator_classification(self):
+        """Test that operators are correctly classified as MEDIUM importance."""
+        source = "x = 1 + 2 * 3 / 4 - 5"
+        tokens = tokenize_code(source)
+
+        operator_tokens = [token for token in tokens if token.type == 'OPERATOR']
+        self.assertGreater(len(operator_tokens), 0)
+
+        for token in operator_tokens:
+            self.assertEqual(token.importance, 'MEDIUM')
+            self.assertEqual(token.ascii_char, '+')
+
+    def test_tokenize_identifier_classification(self):
+        """Test that identifiers are correctly classified as MEDIUM importance."""
+        source = "variable_name = function_call(parameter)"
+        tokens = tokenize_code(source)
+
+        identifier_tokens = [token for token in tokens if token.type == 'IDENTIFIER']
+        self.assertGreater(len(identifier_tokens), 0)
+
+        for token in identifier_tokens:
+            self.assertEqual(token.importance, 'MEDIUM')
+            self.assertEqual(token.ascii_char, '+')
+
+    def test_tokenize_literal_classification(self):
+        """Test that literals are correctly classified as MEDIUM importance."""
+        source = "x = 42\ny = 'hello'\nz = 3.14"
+        tokens = tokenize_code(source)
+
+        literal_tokens = [token for token in tokens if token.type == 'LITERAL']
+        self.assertGreater(len(literal_tokens), 0)
+
+        for token in literal_tokens:
+            self.assertEqual(token.importance, 'MEDIUM')
+            self.assertEqual(token.ascii_char, '+')
+
+    def test_tokenize_comment_classification(self):
+        """Test that comments are correctly classified as LOW importance."""
+        source = "# This is a comment\nprint('hello')  # Another comment"
+        tokens = tokenize_code(source)
+
+        comment_tokens = [token for token in tokens if token.type == 'COMMENT']
+        self.assertGreater(len(comment_tokens), 0)
+
+        for token in comment_tokens:
+            self.assertEqual(token.importance, 'LOW')
+            self.assertEqual(token.ascii_char, '-')
+
+    def test_tokenize_whitespace_classification(self):
+        """Test that whitespace tokens are correctly classified as LOW importance."""
+        source = "def hello():\n    print('world')\n"
+        tokens = tokenize_code(source)
+
+        whitespace_tokens = [token for token in tokens if token.type == 'WHITESPACE']
+        # Should have NEWLINE and INDENT tokens
+        self.assertGreater(len(whitespace_tokens), 0)
+
+        for token in whitespace_tokens:
+            self.assertEqual(token.importance, 'LOW')
+            self.assertEqual(token.ascii_char, '-')
+
+    def test_tokenize_position_information(self):
+        """Test that position information is correctly extracted."""
+        source = "def hello():\n    print('world')"
+        tokens = tokenize_code(source)
+
+        # Find the 'def' token
+        def_token = next(token for token in tokens if token.value == 'def')
+        self.assertEqual(def_token.line, 1)
+        self.assertEqual(def_token.column, 0)
+
+        # Find the 'print' token (should be on line 2)
+        print_token = next(token for token in tokens if token.value == 'print')
+        self.assertEqual(print_token.line, 2)
+        self.assertGreaterEqual(print_token.column, 4)  # After indentation
+
+    def test_tokenize_sequence_order(self):
+        """Test that token sequence order is maintained."""
+        source = "x = 1 + 2"
+        tokens = tokenize_code(source)
+
+        # Find specific tokens and verify their order
+        token_values = [token.value for token in tokens if token.value.strip()]
+
+        self.assertIn('x', token_values)
+        self.assertIn('=', token_values)
+        self.assertIn('1', token_values)
+        self.assertIn('+', token_values)
+        self.assertIn('2', token_values)
+
+        # Verify order
+        x_index = token_values.index('x')
+        equals_index = token_values.index('=')
+        one_index = token_values.index('1')
+        plus_index = token_values.index('+')
+        two_index = token_values.index('2')
+
+        self.assertLess(x_index, equals_index)
+        self.assertLess(equals_index, one_index)
+        self.assertLess(one_index, plus_index)
+        self.assertLess(plus_index, two_index)
+
+    def test_tokenize_complex_code(self):
+        """Test tokenization of complex Python code with various constructs."""
+        source = '''
+import math
+
+class Calculator:
+    """A simple calculator class."""
+
+    def __init__(self, precision=2):
+        self.precision = precision
+
+    def add(self, a, b):
+        # Addition method
+        return round(a + b, self.precision)
+
+    def multiply(self, x, y):
+        """Multiply two numbers."""
+        result = x * y
+        return result
+
+# Create instance
+calc = Calculator(precision=3)
+print(f"Result: {calc.add(1.5, 2.7)}")
+'''
+        tokens = tokenize_code(source)
+
+        # Verify we have a substantial number of tokens
+        self.assertGreater(len(tokens), 50)
+
+        # Check for presence of different token types
+        token_types = set(token.type for token in tokens)
+        expected_types = {'KEYWORD', 'IDENTIFIER', 'LITERAL', 'OPERATOR', 'COMMENT'}
+        self.assertTrue(expected_types.issubset(token_types))
+
+        # Verify specific important tokens
+        token_values = [token.value for token in tokens]
+        self.assertIn('import', token_values)
+        self.assertIn('class', token_values)
+        self.assertIn('def', token_values)
+        self.assertIn('Calculator', token_values)
+
+    def test_tokenize_empty_source(self):
+        """Test error handling for empty source code."""
+        with self.assertRaises(ValueError) as context:
+            tokenize_code("")
+        self.assertIn("Empty or whitespace-only source", str(context.exception))
+        self.assertIn("Solution:", str(context.exception))
+
+    def test_tokenize_whitespace_only_source(self):
+        """Test error handling for whitespace-only source code."""
+        with self.assertRaises(ValueError) as context:
+            tokenize_code("   \n  \t  \n   ")
+        self.assertIn("Empty or whitespace-only source", str(context.exception))
+        self.assertIn("Solution:", str(context.exception))
+
+    def test_tokenize_invalid_syntax(self):
+        """Test error handling for severe tokenization errors."""
+        invalid_sources = [
+            "print('unclosed string",  # Unclosed string literal
+            'print("unclosed double quote',  # Unclosed double quote
+            "'''unclosed triple quote",  # Unclosed triple quote
+            "print(\\\n",  # Invalid line continuation
+        ]
+
+        for source in invalid_sources:
+            with self.assertRaises(ValueError) as context:
+                tokenize_code(source)
+            self.assertIn("Tokenization failed", str(context.exception))
+            self.assertIn("Solution:", str(context.exception))
+
+    def test_tokenize_unicode_handling(self):
+        """Test tokenization with Unicode characters in strings and comments."""
+        source = '''
+# Café function with émojis 🚀
+def café():
+    message = "Hello, 世界! 🌍"
+    return message
+'''
+        tokens = tokenize_code(source)
+
+        # Should successfully tokenize Unicode content
+        self.assertIsInstance(tokens, list)
+        self.assertGreater(len(tokens), 0)
+
+        # Find Unicode content
+        token_values = [token.value for token in tokens]
+        self.assertIn('café', token_values)
+
+    def test_tokenize_special_characters(self):
+        """Test tokenization of special characters and operators."""
+        source = "x[0] = {1: 2, 3: 4}; y = (a, b, c)"
+        tokens = tokenize_code(source)
+
+        # Check for special character tokens
+        special_chars = ['[', ']', '{', '}', '(', ')', ',', ';', ':']
+        token_values = [token.value for token in tokens]
+
+        for char in special_chars:
+            self.assertIn(char, token_values)
+
+    def test_tokenize_multiline_strings(self):
+        """Test tokenization of multiline strings."""
+        source = '''
+text = """
+This is a
+multiline string
+with multiple lines
+"""
+'''
+        tokens = tokenize_code(source)
+
+        # Should have string token with multiline content
+        string_tokens = [token for token in tokens if token.type == 'LITERAL' and '"""' in token.value]
+        self.assertGreater(len(string_tokens), 0)
+
+    @mock.patch('tokenize.generate_tokens')
+    def test_tokenize_error_handling_mock(self, mock_generate_tokens):
+        """Test error handling using mocked tokenize module."""
+        import tokenize as tokenize_module
+
+        # Mock tokenize.TokenError
+        mock_generate_tokens.side_effect = tokenize_module.TokenError("Mock tokenization error")
+
+        with self.assertRaises(ValueError) as context:
+            tokenize_code("valid code")
+        self.assertIn("Tokenization failed", str(context.exception))
+        self.assertIn("Solution:", str(context.exception))
+
+    def test_tokenize_codetoken_structure(self):
+        """Test that returned CodeToken objects have the correct structure."""
+        source = "def test(): pass"
+        tokens = tokenize_code(source)
+
+        for token in tokens:
+            self.assertIsInstance(token, CodeToken)
+            self.assertIsInstance(token.type, str)
+            self.assertIsInstance(token.value, str)
+            self.assertIsInstance(token.importance, str)
+            self.assertIsInstance(token.line, int)
+            self.assertIsInstance(token.column, int)
+            self.assertIsInstance(token.ascii_char, str)
+
+            # Validate importance levels
+            self.assertIn(token.importance, ['HIGH', 'MEDIUM', 'LOW'])
+
+            # Validate ASCII characters
+            self.assertIn(token.ascii_char, ['#', '+', '-'])
+
+            # Validate line and column are positive
+            self.assertGreaterEqual(token.line, 1)
+            self.assertGreaterEqual(token.column, 0)
 
 
 if __name__ == '__main__':

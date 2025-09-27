@@ -24,7 +24,7 @@ and distributes these tokens across the torus surface. Higher importance
 tokens (keywords, operators) are rendered with more prominent ASCII characters,
 creating a visual hierarchy that represents code structure in 3D space.
 
-Author: BMAD Development System
+Author: Andre Zaiats
 License: MIT
 Python Version: 3.8+
 Dependencies: Python Standard Library Only
@@ -32,6 +32,7 @@ Dependencies: Python Standard Library Only
 
 # === IMPORTS (Python Standard Library Only) ===
 import ast
+import keyword
 import math
 import os
 import sys
@@ -624,17 +625,121 @@ def read_self_code() -> str:
 
 
 def tokenize_code(source: str) -> List[CodeToken]:
-    """Parse source code into classified tokens.
+    """Parse source code into classified tokens using Python's tokenize module.
+
+    Processes source code through tokenize.generate_tokens() to create a token stream,
+    maps tokenize module token types to CodeToken classifications, and extracts
+    position information for spatial mapping.
+
+    Token Classification Mapping:
+    - KEYWORD tokens (def, class, if, for, etc.) -> HIGH importance
+    - OPERATOR tokens (+, -, *, /, ==, etc.) -> MEDIUM importance
+    - NAME tokens (identifiers, function names) -> MEDIUM importance
+    - NUMBER and STRING literals -> MEDIUM importance
+    - COMMENT and whitespace tokens -> LOW importance
+    - Special characters (brackets, parentheses, etc.) -> LOW importance
 
     Args:
         source: Source code string to tokenize
 
     Returns:
-        List of classified code tokens
+        List of classified code tokens with position information
+
+    Raises:
+        ValueError: If tokenization fails with informative error message
     """
-    # Placeholder implementation - will be filled in future stories
+    if not source or not source.strip():
+        raise ValueError(
+            "Empty or whitespace-only source code provided. "
+            "Solution: Provide valid Python source code for tokenization"
+        )
+
     tokens = []
-    # TODO: Implement tokenization logic
+
+    try:
+        # Use StringIO to wrap source code for tokenize.generate_tokens()
+        source_io = StringIO(source)
+
+        # Generate tokens using Python's tokenize module
+        token_generator = tokenize.generate_tokens(source_io.readline)
+
+        for token_info in token_generator:
+            # Extract token information
+            token_type_num = token_info.type
+            token_value = token_info.string
+            start_pos = token_info.start
+
+            # Map tokenize module constants to our classification system
+            token_type_name = tokenize.tok_name.get(token_type_num, 'UNKNOWN')
+
+            # Classify token importance and type
+            if token_type_num == tokenize.NAME and keyword.iskeyword(token_value):
+                # NAME tokens that are Python keywords
+                importance = 'HIGH'
+                token_type = 'KEYWORD'
+            elif token_type_num == tokenize.OP:
+                importance = 'MEDIUM'
+                token_type = 'OPERATOR'
+            elif token_type_num == tokenize.NAME:
+                # NAME tokens that are not keywords (identifiers)
+                importance = 'MEDIUM'
+                token_type = 'IDENTIFIER'
+            elif token_type_num in (tokenize.NUMBER, tokenize.STRING):
+                importance = 'MEDIUM'
+                token_type = 'LITERAL'
+            elif token_type_num == tokenize.COMMENT:
+                importance = 'LOW'
+                token_type = 'COMMENT'
+            elif token_type_num in (tokenize.NL, tokenize.NEWLINE, tokenize.INDENT,
+                                  tokenize.DEDENT):
+                importance = 'LOW'
+                token_type = 'WHITESPACE'
+            elif token_type_num == tokenize.ENDMARKER:
+                # Skip ENDMARKER tokens as they don't represent actual code
+                continue
+            else:
+                # Unknown token types default to LOW importance per coding standards
+                importance = 'LOW'
+                token_type = 'SPECIAL'
+
+            # Map importance to ASCII character for rendering
+            if importance == 'HIGH':
+                ascii_char = ASCII_CHARS['HIGH']  # '#'
+            elif importance == 'MEDIUM':
+                ascii_char = ASCII_CHARS['MEDIUM']  # '+'
+            else:
+                ascii_char = ASCII_CHARS['LOW']  # '-'
+
+            # Create CodeToken with position information
+            code_token = CodeToken(
+                type=token_type,
+                value=token_value,
+                importance=importance,
+                line=start_pos[0],
+                column=start_pos[1],
+                ascii_char=ascii_char
+            )
+
+            tokens.append(code_token)
+
+    except tokenize.TokenError as e:
+        raise ValueError(
+            f"Tokenization failed: {e}. "
+            "Solution: Check Python syntax and ensure source code is valid"
+        )
+    except Exception as e:
+        raise ValueError(
+            f"Unexpected tokenization error: {e}. "
+            "Solution: Verify source code format and encoding"
+        )
+
+    # Validate that we have some tokens (empty source should have been caught earlier)
+    if not tokens:
+        raise ValueError(
+            "No tokens generated from source code. "
+            "Solution: Ensure source contains valid Python code"
+        )
+
     return tokens
 
 
