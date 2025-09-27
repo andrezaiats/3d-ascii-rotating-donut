@@ -58,6 +58,23 @@ _torus_cache = {}
 
 # === DATA MODELS ===
 
+class ImportanceLevel:
+    """Semantic importance hierarchy for code tokens."""
+    CRITICAL = 4  # Keywords (def, class, if, for, etc.)
+    HIGH = 3      # Operators (+, -, *, /, ==, etc.)
+    MEDIUM = 2    # Identifiers, literals (names, numbers, strings)
+    LOW = 1       # Comments, whitespace, special characters
+
+
+# Configurable importance weights for fine-tuning visual emphasis
+IMPORTANCE_WEIGHTS = {
+    ImportanceLevel.CRITICAL: 1.0,   # Full weight for keywords
+    ImportanceLevel.HIGH: 0.8,       # High weight for operators
+    ImportanceLevel.MEDIUM: 0.6,     # Medium weight for identifiers/literals
+    ImportanceLevel.LOW: 0.3         # Low weight for comments/whitespace
+}
+
+
 class Point3D(NamedTuple):
     """Represents a 3D point with torus surface parameters."""
     x: float
@@ -79,7 +96,7 @@ class CodeToken(NamedTuple):
     """Represents a parsed source code token with metadata."""
     type: str
     value: str
-    importance: str  # HIGH, MEDIUM, LOW
+    importance: int  # ImportanceLevel value (4=CRITICAL, 3=HIGH, 2=MEDIUM, 1=LOW)
     line: int
     column: int
     ascii_char: str
@@ -672,49 +689,57 @@ def tokenize_code(source: str) -> List[CodeToken]:
             # Map tokenize module constants to our classification system
             token_type_name = tokenize.tok_name.get(token_type_num, 'UNKNOWN')
 
-            # Classify token importance and type
+            # Classify token type for initial classification
             if token_type_num == tokenize.NAME and keyword.iskeyword(token_value):
                 # NAME tokens that are Python keywords
-                importance = 'HIGH'
                 token_type = 'KEYWORD'
             elif token_type_num == tokenize.OP:
-                importance = 'MEDIUM'
                 token_type = 'OPERATOR'
             elif token_type_num == tokenize.NAME:
                 # NAME tokens that are not keywords (identifiers)
-                importance = 'MEDIUM'
                 token_type = 'IDENTIFIER'
             elif token_type_num in (tokenize.NUMBER, tokenize.STRING):
-                importance = 'MEDIUM'
                 token_type = 'LITERAL'
             elif token_type_num == tokenize.COMMENT:
-                importance = 'LOW'
                 token_type = 'COMMENT'
             elif token_type_num in (tokenize.NL, tokenize.NEWLINE, tokenize.INDENT,
                                   tokenize.DEDENT):
-                importance = 'LOW'
                 token_type = 'WHITESPACE'
             elif token_type_num == tokenize.ENDMARKER:
                 # Skip ENDMARKER tokens as they don't represent actual code
                 continue
             else:
-                # Unknown token types default to LOW importance per coding standards
-                importance = 'LOW'
+                # Unknown token types default to SPECIAL per coding standards
                 token_type = 'SPECIAL'
 
-            # Map importance to ASCII character for rendering
-            if importance == 'HIGH':
-                ascii_char = ASCII_CHARS['HIGH']  # '#'
-            elif importance == 'MEDIUM':
-                ascii_char = ASCII_CHARS['MEDIUM']  # '+'
-            else:
-                ascii_char = ASCII_CHARS['LOW']  # '-'
+            # Create initial CodeToken for importance classification
+            temp_token = CodeToken(
+                type=token_type,
+                value=token_value,
+                importance=ImportanceLevel.LOW,  # Temporary value
+                line=start_pos[0],
+                column=start_pos[1],
+                ascii_char='-'  # Temporary value
+            )
 
-            # Create CodeToken with position information
+            # Use classify_importance() function to determine semantic importance
+            importance_level = classify_importance(temp_token)
+
+            # Map importance level to ASCII character for rendering
+            if importance_level == ImportanceLevel.CRITICAL:
+                ascii_char = ASCII_CHARS['HIGH']  # '#' for highest visibility
+            elif importance_level == ImportanceLevel.HIGH:
+                ascii_char = ASCII_CHARS['MEDIUM']  # '+' for high visibility
+            elif importance_level == ImportanceLevel.MEDIUM:
+                ascii_char = ASCII_CHARS['LOW']  # '-' for medium visibility
+            else:  # ImportanceLevel.LOW
+                ascii_char = ASCII_CHARS['BACKGROUND']  # '.' for lowest visibility
+
+            # Create final CodeToken with classified importance
             code_token = CodeToken(
                 type=token_type,
                 value=token_value,
-                importance=importance,
+                importance=importance_level,
                 line=start_pos[0],
                 column=start_pos[1],
                 ascii_char=ascii_char
@@ -743,19 +768,150 @@ def tokenize_code(source: str) -> List[CodeToken]:
     return tokens
 
 
-def classify_importance(token_type: str, token_value: str) -> str:
-    """Assign semantic importance hierarchy to tokens.
+def classify_importance(token: CodeToken) -> int:
+    """Assign semantic importance hierarchy to tokens based on 4-level system.
+
+    Implements comprehensive token classification mapping Python token types to
+    semantic importance levels for visual emphasis in the torus display.
+
+    Classification Hierarchy:
+    - CRITICAL (4): Python keywords (def, class, if, for, while, etc.)
+    - HIGH (3): Operators (+, -, *, /, ==, etc.) and decorators
+    - MEDIUM (2): Identifiers, literals (variables, numbers, strings)
+    - LOW (1): Comments, whitespace, special characters
+
+    Special Cases Handled:
+    - Built-in functions detected using keyword.iskeyword() and builtins
+    - Decorators (@decorator) assigned HIGH importance
+    - String literals classified as MEDIUM importance
+    - Unknown token types default to LOW importance per coding standards
 
     Args:
-        token_type: Type of token from tokenize module
-        token_value: String value of the token
+        token: CodeToken object with type, value, and position information
 
     Returns:
-        Importance level: 'HIGH', 'MEDIUM', or 'LOW'
+        ImportanceLevel value (4=CRITICAL, 3=HIGH, 2=MEDIUM, 1=LOW)
+
+    Raises:
+        ValueError: If token parameter is invalid with "Solution:" guidance
     """
-    # Placeholder implementation - will be filled in future stories
-    # TODO: Implement token classification logic
-    return 'LOW'  # Default to LOW importance for unknown tokens
+    # Input validation with proper error handling per coding standards
+    if not isinstance(token, CodeToken):
+        raise ValueError(
+            "Invalid token parameter: expected CodeToken object. "
+            "Solution: Ensure token is created using CodeToken constructor"
+        )
+
+    if not hasattr(token, 'type') or not hasattr(token, 'value'):
+        raise ValueError(
+            "Invalid token structure: missing required attributes. "
+            "Solution: Ensure token has 'type' and 'value' attributes"
+        )
+
+    token_type = token.type
+    token_value = token.value
+
+    # Handle edge case of empty or None values
+    if not token_value:
+        return ImportanceLevel.LOW
+
+    try:
+        # CRITICAL IMPORTANCE: Python keywords
+        if token_type == 'KEYWORD':
+            return ImportanceLevel.CRITICAL
+
+        # HIGH IMPORTANCE: Operators and decorators
+        if token_type == 'OPERATOR':
+            return ImportanceLevel.HIGH
+
+        # Special case: Decorator detection for @ symbol
+        if token_value.startswith('@') or token_type == 'DECORATOR':
+            return ImportanceLevel.HIGH
+
+        # Special case: Built-in function detection
+        if token_type == 'IDENTIFIER' and _is_builtin_function(token_value):
+            return ImportanceLevel.HIGH
+
+        # MEDIUM IMPORTANCE: Identifiers and literals
+        if token_type in ('IDENTIFIER', 'LITERAL'):
+            return ImportanceLevel.MEDIUM
+
+        # LOW IMPORTANCE: Comments, whitespace, special characters
+        if token_type in ('COMMENT', 'WHITESPACE', 'SPECIAL'):
+            return ImportanceLevel.LOW
+
+        # Unknown token types default to LOW importance per coding standards
+        return ImportanceLevel.LOW
+
+    except Exception as e:
+        # Graceful error handling with specific exception catching
+        raise ValueError(
+            f"Token classification failed: {e}. "
+            "Solution: Verify token structure and retry classification"
+        )
+
+
+def _is_builtin_function(token_value: str) -> bool:
+    """Detect built-in function names using keyword and builtins modules.
+
+    Checks if a token value represents a Python built-in function or keyword
+    for appropriate importance classification.
+
+    Args:
+        token_value: String value to check
+
+    Returns:
+        True if token represents a built-in function or keyword
+    """
+    try:
+        # Check if it's a Python keyword
+        if keyword.iskeyword(token_value):
+            return True
+
+        # Check if it's a built-in function
+        import builtins
+        return hasattr(builtins, token_value) and callable(getattr(builtins, token_value))
+
+    except Exception:
+        # Safe fallback for any unexpected issues
+        return False
+
+
+def _is_string_literal(token_value: str) -> bool:
+    """Determine if a token value represents a string literal.
+
+    Handles various Python string literal formats including single quotes,
+    double quotes, triple quotes, and raw strings.
+
+    Args:
+        token_value: String value to check
+
+    Returns:
+        True if token represents a string literal
+    """
+    try:
+        # Check for basic string literal patterns
+        if not token_value:
+            return False
+
+        # Remove common prefixes (r, u, b, f for raw, unicode, bytes, f-strings)
+        cleaned_value = token_value.lower()
+        for prefix in ('r"', "r'", 'u"', "u'", 'b"', "b'", 'f"', "f'", 'rf"', "rf'"):
+            if cleaned_value.startswith(prefix):
+                return True
+
+        # Check for standard quoted strings
+        if ((token_value.startswith('"') and token_value.endswith('"')) or
+            (token_value.startswith("'") and token_value.endswith("'")) or
+            (token_value.startswith('"""') and token_value.endswith('"""')) or
+            (token_value.startswith("'''") and token_value.endswith("'''"))):
+            return True
+
+        return False
+
+    except Exception:
+        # Safe fallback for any unexpected issues
+        return False
 
 
 # === RENDERING ENGINE ===

@@ -22,7 +22,11 @@ from rotating_donut import (
     validate_file_content,
     read_self_code,
     tokenize_code,
-    CodeToken
+    classify_importance,
+    _is_builtin_function,
+    _is_string_literal,
+    CodeToken,
+    ImportanceLevel
 )
 
 
@@ -306,11 +310,11 @@ class TestTokenizeCode(unittest.TestCase):
         self.assertGreater(len(keyword_tokens), 0)
 
         for token in keyword_tokens:
-            self.assertEqual(token.importance, 'HIGH')
+            self.assertEqual(token.importance, ImportanceLevel.CRITICAL)
             self.assertEqual(token.ascii_char, '#')
 
     def test_tokenize_operator_classification(self):
-        """Test that operators are correctly classified as MEDIUM importance."""
+        """Test that operators are correctly classified as HIGH importance."""
         source = "x = 1 + 2 * 3 / 4 - 5"
         tokens = tokenize_code(source)
 
@@ -318,7 +322,7 @@ class TestTokenizeCode(unittest.TestCase):
         self.assertGreater(len(operator_tokens), 0)
 
         for token in operator_tokens:
-            self.assertEqual(token.importance, 'MEDIUM')
+            self.assertEqual(token.importance, ImportanceLevel.HIGH)
             self.assertEqual(token.ascii_char, '+')
 
     def test_tokenize_identifier_classification(self):
@@ -330,8 +334,8 @@ class TestTokenizeCode(unittest.TestCase):
         self.assertGreater(len(identifier_tokens), 0)
 
         for token in identifier_tokens:
-            self.assertEqual(token.importance, 'MEDIUM')
-            self.assertEqual(token.ascii_char, '+')
+            self.assertEqual(token.importance, ImportanceLevel.MEDIUM)
+            self.assertEqual(token.ascii_char, '-')
 
     def test_tokenize_literal_classification(self):
         """Test that literals are correctly classified as MEDIUM importance."""
@@ -342,8 +346,8 @@ class TestTokenizeCode(unittest.TestCase):
         self.assertGreater(len(literal_tokens), 0)
 
         for token in literal_tokens:
-            self.assertEqual(token.importance, 'MEDIUM')
-            self.assertEqual(token.ascii_char, '+')
+            self.assertEqual(token.importance, ImportanceLevel.MEDIUM)
+            self.assertEqual(token.ascii_char, '-')
 
     def test_tokenize_comment_classification(self):
         """Test that comments are correctly classified as LOW importance."""
@@ -354,8 +358,8 @@ class TestTokenizeCode(unittest.TestCase):
         self.assertGreater(len(comment_tokens), 0)
 
         for token in comment_tokens:
-            self.assertEqual(token.importance, 'LOW')
-            self.assertEqual(token.ascii_char, '-')
+            self.assertEqual(token.importance, ImportanceLevel.LOW)
+            self.assertEqual(token.ascii_char, '.')
 
     def test_tokenize_whitespace_classification(self):
         """Test that whitespace tokens are correctly classified as LOW importance."""
@@ -367,8 +371,8 @@ class TestTokenizeCode(unittest.TestCase):
         self.assertGreater(len(whitespace_tokens), 0)
 
         for token in whitespace_tokens:
-            self.assertEqual(token.importance, 'LOW')
-            self.assertEqual(token.ascii_char, '-')
+            self.assertEqual(token.importance, ImportanceLevel.LOW)
+            self.assertEqual(token.ascii_char, '.')
 
     def test_tokenize_position_information(self):
         """Test that position information is correctly extracted."""
@@ -548,20 +552,415 @@ with multiple lines
             self.assertIsInstance(token, CodeToken)
             self.assertIsInstance(token.type, str)
             self.assertIsInstance(token.value, str)
-            self.assertIsInstance(token.importance, str)
+            self.assertIsInstance(token.importance, int)
             self.assertIsInstance(token.line, int)
             self.assertIsInstance(token.column, int)
             self.assertIsInstance(token.ascii_char, str)
 
             # Validate importance levels
-            self.assertIn(token.importance, ['HIGH', 'MEDIUM', 'LOW'])
+            self.assertIn(token.importance, [ImportanceLevel.CRITICAL, ImportanceLevel.HIGH, ImportanceLevel.MEDIUM, ImportanceLevel.LOW])
 
             # Validate ASCII characters
-            self.assertIn(token.ascii_char, ['#', '+', '-'])
+            self.assertIn(token.ascii_char, ['#', '+', '-', '.'])
 
             # Validate line and column are positive
             self.assertGreaterEqual(token.line, 1)
             self.assertGreaterEqual(token.column, 0)
+
+
+class TestClassifyImportance(unittest.TestCase):
+    """Test the classify_importance() function for semantic importance hierarchy."""
+
+    def test_classify_importance_critical_keywords(self):
+        """Test that Python keywords are classified as CRITICAL importance."""
+        keyword_tokens = [
+            CodeToken('KEYWORD', 'def', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('KEYWORD', 'class', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('KEYWORD', 'if', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('KEYWORD', 'for', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('KEYWORD', 'while', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('KEYWORD', 'try', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('KEYWORD', 'except', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('KEYWORD', 'import', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('KEYWORD', 'return', ImportanceLevel.LOW, 1, 0, '-'),
+        ]
+
+        for token in keyword_tokens:
+            importance = classify_importance(token)
+            self.assertEqual(importance, ImportanceLevel.CRITICAL,
+                           f"Keyword '{token.value}' should be CRITICAL importance")
+
+    def test_classify_importance_high_operators(self):
+        """Test that operators are classified as HIGH importance."""
+        operator_tokens = [
+            CodeToken('OPERATOR', '+', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('OPERATOR', '-', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('OPERATOR', '*', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('OPERATOR', '/', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('OPERATOR', '==', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('OPERATOR', '!=', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('OPERATOR', '>=', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('OPERATOR', '<=', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('OPERATOR', '=', ImportanceLevel.LOW, 1, 0, '-'),
+        ]
+
+        for token in operator_tokens:
+            importance = classify_importance(token)
+            self.assertEqual(importance, ImportanceLevel.HIGH,
+                           f"Operator '{token.value}' should be HIGH importance")
+
+    def test_classify_importance_medium_identifiers(self):
+        """Test that identifiers are classified as MEDIUM importance."""
+        identifier_tokens = [
+            CodeToken('IDENTIFIER', 'variable_name', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('IDENTIFIER', 'function_name', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('IDENTIFIER', 'class_name', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('IDENTIFIER', 'parameter', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('IDENTIFIER', 'method', ImportanceLevel.LOW, 1, 0, '-'),
+        ]
+
+        for token in identifier_tokens:
+            importance = classify_importance(token)
+            self.assertEqual(importance, ImportanceLevel.MEDIUM,
+                           f"Identifier '{token.value}' should be MEDIUM importance")
+
+    def test_classify_importance_medium_literals(self):
+        """Test that literals are classified as MEDIUM importance."""
+        literal_tokens = [
+            CodeToken('LITERAL', '42', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('LITERAL', '3.14', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('LITERAL', "'hello'", ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('LITERAL', '"world"', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('LITERAL', '"""multiline"""', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('LITERAL', 'True', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('LITERAL', 'False', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('LITERAL', 'None', ImportanceLevel.LOW, 1, 0, '-'),
+        ]
+
+        for token in literal_tokens:
+            importance = classify_importance(token)
+            self.assertEqual(importance, ImportanceLevel.MEDIUM,
+                           f"Literal '{token.value}' should be MEDIUM importance")
+
+    def test_classify_importance_low_comments(self):
+        """Test that comments are classified as LOW importance."""
+        comment_tokens = [
+            CodeToken('COMMENT', '# This is a comment', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('COMMENT', '# TODO: Fix this', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('COMMENT', '# Another comment', ImportanceLevel.LOW, 1, 0, '-'),
+        ]
+
+        for token in comment_tokens:
+            importance = classify_importance(token)
+            self.assertEqual(importance, ImportanceLevel.LOW,
+                           f"Comment '{token.value}' should be LOW importance")
+
+    def test_classify_importance_low_whitespace(self):
+        """Test that whitespace tokens are classified as LOW importance."""
+        whitespace_tokens = [
+            CodeToken('WHITESPACE', '\n', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('WHITESPACE', '    ', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('WHITESPACE', '\t', ImportanceLevel.LOW, 1, 0, '-'),
+        ]
+
+        for token in whitespace_tokens:
+            importance = classify_importance(token)
+            self.assertEqual(importance, ImportanceLevel.LOW,
+                           f"Whitespace token should be LOW importance")
+
+    def test_classify_importance_low_special_characters(self):
+        """Test that special characters are classified as LOW importance."""
+        special_tokens = [
+            CodeToken('SPECIAL', '(', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('SPECIAL', ')', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('SPECIAL', '[', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('SPECIAL', ']', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('SPECIAL', '{', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('SPECIAL', '}', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('SPECIAL', ';', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('SPECIAL', ',', ImportanceLevel.LOW, 1, 0, '-'),
+        ]
+
+        for token in special_tokens:
+            importance = classify_importance(token)
+            self.assertEqual(importance, ImportanceLevel.LOW,
+                           f"Special character '{token.value}' should be LOW importance")
+
+    def test_classify_importance_high_decorators(self):
+        """Test that decorators are classified as HIGH importance."""
+        decorator_tokens = [
+            CodeToken('OPERATOR', '@property', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('OPERATOR', '@staticmethod', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('OPERATOR', '@classmethod', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('DECORATOR', '@custom_decorator', ImportanceLevel.LOW, 1, 0, '-'),
+        ]
+
+        for token in decorator_tokens:
+            importance = classify_importance(token)
+            self.assertEqual(importance, ImportanceLevel.HIGH,
+                           f"Decorator '{token.value}' should be HIGH importance")
+
+    def test_classify_importance_high_builtin_functions(self):
+        """Test that built-in functions are classified as HIGH importance."""
+        builtin_tokens = [
+            CodeToken('IDENTIFIER', 'print', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('IDENTIFIER', 'len', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('IDENTIFIER', 'str', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('IDENTIFIER', 'int', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('IDENTIFIER', 'float', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('IDENTIFIER', 'list', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('IDENTIFIER', 'dict', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('IDENTIFIER', 'range', ImportanceLevel.LOW, 1, 0, '-'),
+        ]
+
+        for token in builtin_tokens:
+            importance = classify_importance(token)
+            self.assertEqual(importance, ImportanceLevel.HIGH,
+                           f"Built-in function '{token.value}' should be HIGH importance")
+
+    def test_classify_importance_error_handling(self):
+        """Test error handling for invalid token parameters."""
+        # Test with non-CodeToken object (string)
+        with self.assertRaises(ValueError) as context:
+            classify_importance("not_a_token")
+        self.assertIn("Invalid token parameter", str(context.exception))
+        self.assertIn("Solution:", str(context.exception))
+
+        # Test with non-CodeToken object (dict)
+        with self.assertRaises(ValueError) as context:
+            classify_importance({"type": "test", "value": "test"})
+        self.assertIn("Invalid token parameter", str(context.exception))
+        self.assertIn("Solution:", str(context.exception))
+
+        # Test with object missing required attributes (this will also be caught by isinstance)
+        class InvalidToken:
+            pass
+
+        with self.assertRaises(ValueError) as context:
+            classify_importance(InvalidToken())
+        self.assertIn("Invalid token parameter", str(context.exception))
+        self.assertIn("Solution:", str(context.exception))
+
+    def test_classify_importance_empty_value(self):
+        """Test handling of tokens with empty values."""
+        empty_token = CodeToken('IDENTIFIER', '', ImportanceLevel.LOW, 1, 0, '-')
+        importance = classify_importance(empty_token)
+        self.assertEqual(importance, ImportanceLevel.LOW)
+
+        none_token = CodeToken('IDENTIFIER', None, ImportanceLevel.LOW, 1, 0, '-')
+        importance = classify_importance(none_token)
+        self.assertEqual(importance, ImportanceLevel.LOW)
+
+    def test_classify_importance_unknown_token_types(self):
+        """Test that unknown token types default to LOW importance."""
+        unknown_tokens = [
+            CodeToken('UNKNOWN_TYPE', 'value', ImportanceLevel.LOW, 1, 0, '-'),
+            CodeToken('WEIRD_TOKEN', 'another_value', ImportanceLevel.LOW, 1, 0, '-'),
+        ]
+
+        for token in unknown_tokens:
+            importance = classify_importance(token)
+            self.assertEqual(importance, ImportanceLevel.LOW,
+                           f"Unknown token type '{token.type}' should default to LOW importance")
+
+
+class TestBuiltinFunctionDetection(unittest.TestCase):
+    """Test the _is_builtin_function() helper function."""
+
+    def test_is_builtin_function_python_keywords(self):
+        """Test detection of Python keywords."""
+        keywords = ['def', 'class', 'if', 'for', 'while', 'try', 'except', 'import']
+        for keyword in keywords:
+            self.assertTrue(_is_builtin_function(keyword),
+                          f"'{keyword}' should be detected as keyword/builtin")
+
+    def test_is_builtin_function_builtin_functions(self):
+        """Test detection of Python built-in functions."""
+        builtins = ['print', 'len', 'str', 'int', 'float', 'list', 'dict', 'range', 'enumerate']
+        for builtin in builtins:
+            self.assertTrue(_is_builtin_function(builtin),
+                          f"'{builtin}' should be detected as built-in function")
+
+    def test_is_builtin_function_non_builtins(self):
+        """Test that regular identifiers are not detected as built-ins."""
+        non_builtins = ['variable_name', 'custom_function', 'MyClass', 'parameter']
+        for identifier in non_builtins:
+            self.assertFalse(_is_builtin_function(identifier),
+                           f"'{identifier}' should not be detected as built-in")
+
+    def test_is_builtin_function_edge_cases(self):
+        """Test edge cases for built-in function detection."""
+        # Empty string
+        self.assertFalse(_is_builtin_function(''))
+
+        # None (should handle gracefully)
+        self.assertFalse(_is_builtin_function(None))
+
+
+class TestStringLiteralDetection(unittest.TestCase):
+    """Test the _is_string_literal() helper function."""
+
+    def test_is_string_literal_single_quotes(self):
+        """Test detection of single-quoted strings."""
+        single_quotes = ["'hello'", "'world'", "'test string'", "'123'"]
+        for string in single_quotes:
+            self.assertTrue(_is_string_literal(string),
+                          f"'{string}' should be detected as string literal")
+
+    def test_is_string_literal_double_quotes(self):
+        """Test detection of double-quoted strings."""
+        double_quotes = ['"hello"', '"world"', '"test string"', '"123"']
+        for string in double_quotes:
+            self.assertTrue(_is_string_literal(string),
+                          f"'{string}' should be detected as string literal")
+
+    def test_is_string_literal_triple_quotes(self):
+        """Test detection of triple-quoted strings."""
+        triple_quotes = ['"""hello"""', "'''world'''", '"""multiline\nstring"""']
+        for string in triple_quotes:
+            self.assertTrue(_is_string_literal(string),
+                          f"'{string}' should be detected as string literal")
+
+    def test_is_string_literal_prefixed_strings(self):
+        """Test detection of prefixed strings (raw, unicode, bytes, f-strings)."""
+        prefixed_strings = [
+            'r"raw string"', "r'raw string'",
+            'u"unicode"', "u'unicode'",
+            'b"bytes"', "b'bytes'",
+            'f"f-string"', "f'f-string'",
+            'rf"raw f-string"', "rf'raw f-string'"
+        ]
+        for string in prefixed_strings:
+            self.assertTrue(_is_string_literal(string),
+                          f"'{string}' should be detected as string literal")
+
+    def test_is_string_literal_non_strings(self):
+        """Test that non-string tokens are not detected as string literals."""
+        non_strings = ['42', '3.14', 'variable_name', 'True', 'False', 'None', '+', '==']
+        for token in non_strings:
+            self.assertFalse(_is_string_literal(token),
+                           f"'{token}' should not be detected as string literal")
+
+    def test_is_string_literal_edge_cases(self):
+        """Test edge cases for string literal detection."""
+        # Empty string
+        self.assertFalse(_is_string_literal(''))
+
+        # None
+        self.assertFalse(_is_string_literal(None))
+
+        # Incomplete strings (should not match)
+        incomplete_strings = ['"incomplete', "'incomplete", 'incomplete"', "incomplete'"]
+        for string in incomplete_strings:
+            self.assertFalse(_is_string_literal(string),
+                           f"'{string}' should not be detected as complete string literal")
+
+
+class TestImportanceLevelIntegration(unittest.TestCase):
+    """Integration tests for the complete importance classification system."""
+
+    def test_tokenize_with_new_importance_system(self):
+        """Test that tokenize_code() properly uses the new importance classification."""
+        source = """
+def example_function():
+    # This is a comment
+    x = 42 + 3.14
+    print('Hello, world!')
+    return x
+"""
+        tokens = tokenize_code(source)
+
+        # Find specific tokens and verify their importance levels
+        token_map = {token.value: token for token in tokens if token.value.strip()}
+
+        # Keywords should be CRITICAL (4)
+        if 'def' in token_map:
+            self.assertEqual(token_map['def'].importance, ImportanceLevel.CRITICAL)
+        if 'return' in token_map:
+            self.assertEqual(token_map['return'].importance, ImportanceLevel.CRITICAL)
+
+        # Operators should be HIGH (3)
+        if '=' in token_map:
+            self.assertEqual(token_map['='].importance, ImportanceLevel.HIGH)
+        if '+' in token_map:
+            self.assertEqual(token_map['+'].importance, ImportanceLevel.HIGH)
+
+        # Built-in functions should be HIGH (3)
+        if 'print' in token_map:
+            self.assertEqual(token_map['print'].importance, ImportanceLevel.HIGH)
+
+        # Identifiers should be MEDIUM (2)
+        if 'example_function' in token_map:
+            self.assertEqual(token_map['example_function'].importance, ImportanceLevel.MEDIUM)
+        if 'x' in token_map:
+            self.assertEqual(token_map['x'].importance, ImportanceLevel.MEDIUM)
+
+        # Literals should be MEDIUM (2)
+        if '42' in token_map:
+            self.assertEqual(token_map['42'].importance, ImportanceLevel.MEDIUM)
+        if '3.14' in token_map:
+            self.assertEqual(token_map['3.14'].importance, ImportanceLevel.MEDIUM)
+
+    def test_ascii_character_mapping_with_importance(self):
+        """Test that ASCII characters are properly mapped based on importance levels."""
+        source = "def test(): return 42 + x  # comment"
+        tokens = tokenize_code(source)
+
+        # Create mapping for easier testing
+        token_map = {token.value: token for token in tokens if token.value.strip()}
+
+        # CRITICAL importance (keywords) should map to '#'
+        if 'def' in token_map:
+            self.assertEqual(token_map['def'].ascii_char, '#')
+        if 'return' in token_map:
+            self.assertEqual(token_map['return'].ascii_char, '#')
+
+        # HIGH importance (operators, built-ins) should map to '+'
+        if '+' in token_map:
+            self.assertEqual(token_map['+'].ascii_char, '+')
+
+        # MEDIUM importance (identifiers, literals) should map to '-'
+        if 'test' in token_map:
+            self.assertEqual(token_map['test'].ascii_char, '-')
+        if '42' in token_map:
+            self.assertEqual(token_map['42'].ascii_char, '-')
+        if 'x' in token_map:
+            self.assertEqual(token_map['x'].ascii_char, '-')
+
+        # LOW importance (comments) should map to '.'
+        comment_tokens = [token for token in tokens if token.type == 'COMMENT']
+        for token in comment_tokens:
+            self.assertEqual(token.ascii_char, '.')
+
+    def test_comprehensive_code_classification(self):
+        """Test classification of a comprehensive code sample."""
+        source = '''
+@property
+def calculate_area(self, radius: float) -> float:
+    """Calculate circle area using math.pi."""
+    import math
+    area = math.pi * radius ** 2
+    print(f"Area: {area}")
+    return area
+'''
+        tokens = tokenize_code(source)
+
+        # Count tokens by importance level
+        importance_counts = {
+            ImportanceLevel.CRITICAL: 0,
+            ImportanceLevel.HIGH: 0,
+            ImportanceLevel.MEDIUM: 0,
+            ImportanceLevel.LOW: 0
+        }
+
+        for token in tokens:
+            importance_counts[token.importance] += 1
+
+        # Should have tokens at all importance levels
+        self.assertGreater(importance_counts[ImportanceLevel.CRITICAL], 0, "Should have CRITICAL tokens")
+        self.assertGreater(importance_counts[ImportanceLevel.HIGH], 0, "Should have HIGH tokens")
+        self.assertGreater(importance_counts[ImportanceLevel.MEDIUM], 0, "Should have MEDIUM tokens")
+        self.assertGreater(importance_counts[ImportanceLevel.LOW], 0, "Should have LOW tokens")
 
 
 if __name__ == '__main__':
