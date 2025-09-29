@@ -41,6 +41,26 @@ import tokenize
 from io import StringIO
 from typing import NamedTuple, List, Optional, Tuple
 
+# Import refactored modules
+from performance_monitor import (
+    performance_monitor,
+    get_performance_report,
+    memory_monitor,
+    record_frame_time,
+    get_performance_stats
+)
+from cache_manager import (
+    TokenCache,
+    get_token_cache,
+    get_cached_rotation_matrix,
+    get_cached_projection,
+    cache_projection_result,
+    cache_torus_geometry,
+    get_cached_torus_geometry,
+    clear_performance_caches,
+    manage_rotation_cache_size
+)
+
 # === CONSTANTS ===
 TERMINAL_WIDTH = 40
 TERMINAL_HEIGHT = 20
@@ -52,283 +72,11 @@ ASCII_CHARS = {
     'BACKGROUND': '.'
 }
 
-# Cache for torus geometry calculations to prevent regeneration per performance rules
-_torus_cache = {}
-
-# Performance monitoring and optimization infrastructure
-_rotation_matrix_cache = {}  # Cache for rotation matrices at common angles
-_projection_cache = {}       # Cache for frequently used projection calculations
-_performance_stats = {
-    'frame_times': [],
-    'math_times': [],
-    'projection_times': [],
-    'total_frames': 0,
-    'cache_hits': 0,
-    'cache_misses': 0
-}
-
-# === TOKEN CACHE SYSTEM FOR REAL-TIME INTEGRATION (Story 3.4) ===
-
-class TokenCache:
-    """Comprehensive token data caching system for efficient frame-to-frame access.
-
-    Implements Story 3.4 requirements for token caching and pipeline optimization.
-    Stores preprocessed token data with efficient lookup structures to eliminate
-    repeated parsing and classification during animation.
-
-    Attributes:
-        source_code: Cached source code string
-        tokens: List of parsed CodeToken objects
-        enhanced_tokens: Tokens enhanced with structural analysis
-        importance_map: Dict mapping tokens to cached importance levels
-        structural_info: Cached structural analysis results
-        token_mappings: Pre-computed token-to-surface mappings
-        last_update: Timestamp of last cache update
-        cache_valid: Boolean indicating cache validity
-    """
-
-    def __init__(self):
-        """Initialize empty token cache."""
-        self.source_code = None
-        self.tokens = None
-        self.enhanced_tokens = None
-        self.importance_map = {}
-        self.structural_info = None
-        self.token_mappings = None
-        self.last_update = None
-        self.cache_valid = False
-
-    def populate(self, source_code: str, tokens: List['CodeToken'],
-                structural_info: 'StructuralInfo' = None) -> None:
-        """Populate cache with preprocessed token data.
-
-        Args:
-            source_code: The source code string
-            tokens: List of parsed tokens
-            structural_info: Optional structural analysis results
-        """
-        self.source_code = source_code
-        self.tokens = tokens
-        self.structural_info = structural_info
-        self.last_update = time.time()
-        self.cache_valid = True
-
-            # Cache importance classifications to avoid repeated calls
-        self.importance_map = {}
-        self.token_lookup = {}  # Fast token lookup by position
-        for i, token in enumerate(tokens):
-            if hasattr(token, 'importance'):
-                self.importance_map[id(token)] = token.importance
-            # Create fast position-based lookup
-            if hasattr(token, 'line') and hasattr(token, 'column'):
-                self.token_lookup[(token.line, token.column)] = i
-
-    def get_tokens(self) -> Optional[List['CodeToken']]:
-        """Get cached tokens with validation.
-
-        Returns:
-            Cached tokens if valid, None otherwise
-        """
-        if self.cache_valid and self.tokens:
-            return self.tokens
-        return None
-
-    def get_enhanced_tokens(self) -> Optional[List['CodeToken']]:
-        """Get cached enhanced tokens.
-
-        Returns:
-            Cached enhanced tokens if valid, None otherwise
-        """
-        if self.cache_valid and self.enhanced_tokens:
-            return self.enhanced_tokens
-        return None
-
-    def set_enhanced_tokens(self, enhanced_tokens: List['CodeToken']) -> None:
-        """Store enhanced tokens in cache.
-
-        Args:
-            enhanced_tokens: Tokens enhanced with structural analysis
-        """
-        self.enhanced_tokens = enhanced_tokens
-        # Update importance map with enhanced tokens
-        for token in enhanced_tokens:
-            if hasattr(token, 'importance'):
-                self.importance_map[id(token)] = token.importance
-
-    def set_token_mappings(self, mappings: List[Tuple[int, 'CodeToken']]) -> None:
-        """Store pre-computed token-to-point mappings.
-
-        Args:
-            mappings: List of (point_index, token) pairs
-        """
-        self.token_mappings = mappings
-
-    def get_token_mappings(self) -> Optional[List[Tuple[int, 'CodeToken']]]:
-        """Get cached token mappings.
-
-        Returns:
-            Cached mappings if valid, None otherwise
-        """
-        if self.cache_valid and self.token_mappings:
-            return self.token_mappings
-        return None
-
-    def invalidate(self) -> None:
-        """Invalidate cache, forcing refresh on next access."""
-        self.cache_valid = False
-
-    def get_token_by_position(self, line: int, column: int) -> Optional['CodeToken']:
-        """Fast token lookup by position.
-
-        Args:
-            line: Line number
-            column: Column number
-
-        Returns:
-            Token at the specified position or None if not found
-        """
-        if (line, column) in self.token_lookup and self.tokens:
-            index = self.token_lookup[(line, column)]
-            return self.tokens[index] if index < len(self.tokens) else None
-        return None
-
-    def get_cached_importance(self, token: 'CodeToken') -> Optional[int]:
-        """Get cached importance level for a token.
-
-        Args:
-            token: Token to get importance for
-
-        Returns:
-            Cached importance level or None if not cached
-        """
-        return self.importance_map.get(id(token))
-
-    def clear(self) -> None:
-        """Clear all cached data to free memory."""
-        self.source_code = None
-        self.tokens = None
-        self.enhanced_tokens = None
-        self.importance_map.clear()
-        self.token_lookup.clear()
-        self.structural_info = None
-        self.token_mappings = None
-        self.last_update = None
-        self.cache_valid = False
-
-    def memory_usage(self) -> int:
-        """Estimate memory usage of cached data in bytes.
-
-        Returns:
-            Approximate memory usage in bytes
-        """
-        usage = 0
-        if self.source_code:
-            usage += len(self.source_code)
-        if self.tokens:
-            usage += len(self.tokens) * 100  # Rough estimate per token
-        if self.enhanced_tokens:
-            usage += len(self.enhanced_tokens) * 120
-        usage += len(self.importance_map) * 50
-        if self.token_mappings:
-            usage += len(self.token_mappings) * 20
-        return usage
-
 # Global token cache instance for efficient reuse across animation sessions
-_token_cache = TokenCache()
+_token_cache = get_token_cache()
 
 
-def performance_monitor(func_name: str):
-    """Decorator for monitoring function performance.
-
-    Args:
-        func_name: Name of the function for performance tracking
-    """
-    def decorator(func):
-        def wrapper(*args, **kwargs):
-            start_time = time.time()
-            result = func(*args, **kwargs)
-            execution_time = time.time() - start_time
-
-            # Track performance stats
-            if func_name == 'math':
-                _performance_stats['math_times'].append(execution_time)
-            elif func_name == 'projection':
-                _performance_stats['projection_times'].append(execution_time)
-
-            return result
-        return wrapper
-    return decorator
-
-
-def get_cached_rotation_matrix(angle: float, precision: int = 1000) -> Tuple[float, float]:
-    """Get cached rotation matrix components for common angles.
-
-    Args:
-        angle: Rotation angle in radians
-        precision: Discretization precision for caching
-
-    Returns:
-        Tuple of (cos_angle, sin_angle)
-    """
-    # Discretize angle for caching (e.g., precision=1000 gives ~0.006 radian steps)
-    cache_key = round(angle * precision) % (int(2 * math.pi * precision))
-
-    if cache_key in _rotation_matrix_cache:
-        _performance_stats['cache_hits'] += 1
-        return _rotation_matrix_cache[cache_key]
-
-    # Calculate and cache
-    cos_angle = math.cos(angle)
-    sin_angle = math.sin(angle)
-    _rotation_matrix_cache[cache_key] = (cos_angle, sin_angle)
-    _performance_stats['cache_misses'] += 1
-
-    return cos_angle, sin_angle
-
-
-def clear_performance_caches():
-    """Clear all performance caches to prevent memory buildup."""
-    global _rotation_matrix_cache, _projection_cache
-    _rotation_matrix_cache.clear()
-    _projection_cache.clear()
-
-
-def memory_monitor():
-    """Monitor and manage memory usage during animation."""
-    import gc
-
-    # Track memory statistics
-    memory_info = {
-        'torus_cache_size': len(_torus_cache),
-        'rotation_cache_size': len(_rotation_matrix_cache),
-        'projection_cache_size': len(_projection_cache),
-        'token_cache_memory': _token_cache.memory_usage(),
-        'performance_stats_size': len(_performance_stats['frame_times'])
-    }
-
-    # Memory cleanup triggers
-    total_cache_items = (memory_info['torus_cache_size'] +
-                        memory_info['rotation_cache_size'] +
-                        memory_info['projection_cache_size'])
-
-    # Clear oldest performance data if growing too large
-    if memory_info['performance_stats_size'] > 1000:
-        _performance_stats['frame_times'] = _performance_stats['frame_times'][-500:]
-        _performance_stats['math_times'] = _performance_stats['math_times'][-500:]
-        _performance_stats['projection_times'] = _performance_stats['projection_times'][-500:]
-
-    # Clear rotation cache if it gets too large (keep most recent entries)
-    if memory_info['rotation_cache_size'] > 2000:
-        # Keep only the most recently accessed entries
-        items = list(_rotation_matrix_cache.items())
-        _rotation_matrix_cache.clear()
-        _rotation_matrix_cache.update(dict(items[-1000:]))
-
-    # Trigger garbage collection if memory usage is high
-    if total_cache_items > 5000 or memory_info['token_cache_memory'] > 50000000:  # 50MB
-        gc.collect()
-
-    return memory_info
+# Performance monitoring and cache management now handled by imported modules
 
 
 def create_optimized_frame_buffers() -> Tuple[List[List[str]], List[List[float]], List[List['ImportanceLevel']]]:
@@ -365,30 +113,7 @@ def clear_frame_buffers(char_buffer: List[List[str]],
             importance_buffer[y][x] = ImportanceLevel.LOW
 
 
-def get_performance_report() -> str:
-    """Generate performance analysis report.
-
-    Returns:
-        Formatted performance statistics string
-    """
-    if not _performance_stats['frame_times']:
-        return "No performance data available"
-
-    avg_frame_time = sum(_performance_stats['frame_times'][-100:]) / min(100, len(_performance_stats['frame_times']))
-    avg_fps = 1.0 / avg_frame_time if avg_frame_time > 0 else 0
-
-    avg_math_time = sum(_performance_stats['math_times'][-100:]) / min(100, len(_performance_stats['math_times'])) if _performance_stats['math_times'] else 0
-    avg_proj_time = sum(_performance_stats['projection_times'][-100:]) / min(100, len(_performance_stats['projection_times'])) if _performance_stats['projection_times'] else 0
-
-    cache_hit_rate = (_performance_stats['cache_hits'] / (_performance_stats['cache_hits'] + _performance_stats['cache_misses'])) * 100 if (_performance_stats['cache_hits'] + _performance_stats['cache_misses']) > 0 else 0
-
-    return f"""Performance Report:
-Average FPS: {avg_fps:.1f}
-Average Frame Time: {avg_frame_time*1000:.2f}ms
-Math Operations: {avg_math_time*1000:.2f}ms
-Projection Time: {avg_proj_time*1000:.2f}ms
-Cache Hit Rate: {cache_hit_rate:.1f}%
-Total Frames: {_performance_stats['total_frames']}"""
+# get_performance_report now imported from performance_monitor module
 
 
 def preprocess_tokens_pipeline() -> Tuple[List['CodeToken'], 'StructuralInfo', List[Tuple[int, 'CodeToken']]]:
@@ -429,19 +154,27 @@ def preprocess_tokens_pipeline() -> Tuple[List['CodeToken'], 'StructuralInfo', L
     return enhanced_tokens, structural_info, None  # Mappings computed separately
 
 
-def initialize_token_cache(torus_params: 'TorusParameters') -> Tuple['TokenCache', List['Point3D']]:
+def initialize_token_cache(torus_params: 'TorusParameters', performance_mode: bool = False) -> Tuple['TokenCache', List['Point3D']]:
     """Initialize token cache and torus geometry for animation.
 
     Implements Story 3.4 optimization: Separates initialization from animation loop.
 
     Args:
         torus_params: Torus generation parameters
+        performance_mode: Enable performance optimizations that reduce token count
 
     Returns:
         Tuple of (populated token cache, base torus points)
     """
     # Preprocess tokens through pipeline
     enhanced_tokens, structural_info, _ = preprocess_tokens_pipeline()
+
+    # Performance mode: Reduce token count for better frame rates
+    if performance_mode:
+        # Keep only high and medium importance tokens
+        enhanced_tokens = [token for token in enhanced_tokens
+                          if hasattr(token, 'importance') and token.importance in [ImportanceLevel.HIGH, ImportanceLevel.MEDIUM]]
+        print(f"Performance mode: Reduced to {len(enhanced_tokens)} high/medium importance tokens", flush=True)
 
     # Generate base torus points once
     base_torus_points = generate_torus_points(torus_params)
@@ -679,8 +412,9 @@ def generate_torus_points(params: TorusParameters) -> List[Point3D]:
 
     # Cache torus geometry calculations to prevent regeneration per performance rules
     cache_key = (params.outer_radius, params.inner_radius, params.u_resolution, params.v_resolution)
-    if cache_key in _torus_cache:
-        return _torus_cache[cache_key]
+    cached_result = get_cached_torus_geometry(cache_key)
+    if cached_result:
+        return cached_result
 
     # Import specific math functions for performance optimization
     from math import sin, cos, tau
@@ -727,7 +461,7 @@ def generate_torus_points(params: TorusParameters) -> List[Point3D]:
             points.append(point)
 
     # Cache the result for future use
-    _torus_cache[cache_key] = points
+    cache_torus_geometry(cache_key, points)
     return points
 
 
@@ -1896,38 +1630,7 @@ def _assess_character_variety(frame: DisplayFrame) -> float:
     return min(1.0, variety_ratio)
 
 
-@performance_monitor('projection')
-def get_cached_projection(x: float, y: float, z: float, precision: int = 100) -> Optional[Tuple[int, int, float, bool]]:
-    """Get cached projection result for frequently projected coordinates.
-
-    Args:
-        x, y, z: 3D coordinates
-        precision: Discretization precision for caching
-
-    Returns:
-        Cached projection tuple (grid_x, grid_y, depth, visible) or None if not cached
-    """
-    # Create cache key by discretizing coordinates
-    cache_key = (round(x * precision), round(y * precision), round(z * precision))
-
-    if cache_key in _projection_cache:
-        _performance_stats['cache_hits'] += 1
-        return _projection_cache[cache_key]
-
-    _performance_stats['cache_misses'] += 1
-    return None
-
-
-def cache_projection_result(x: float, y: float, z: float, result: Tuple[int, int, float, bool], precision: int = 100) -> None:
-    """Cache a projection result for future use.
-
-    Args:
-        x, y, z: 3D coordinates
-        result: Projection result to cache
-        precision: Discretization precision for caching
-    """
-    cache_key = (round(x * precision), round(y * precision), round(z * precision))
-    _projection_cache[cache_key] = result
+# Projection caching functions now imported from cache_manager module
 
 
 @performance_monitor('projection')
@@ -5010,7 +4713,7 @@ def handle_interrupts() -> bool:
         return False
 
 
-def run_animation_loop(enable_debug: bool = False) -> None:
+def run_animation_loop(enable_debug: bool = False, performance_mode: bool = False) -> None:
     """Main execution loop with frame rate control and real-time integration.
 
     Implements comprehensive animation control with Story 3.4 optimizations:
@@ -5029,11 +4732,14 @@ def run_animation_loop(enable_debug: bool = False) -> None:
 
     Args:
         enable_debug: Flag to enable structural analysis debugging output
+        performance_mode: Flag to enable performance-first optimizations
     """
     print("Starting 3D ASCII Donut Animation with Real-Time Integration...", flush=True)
     print("Target Frame Rate: 30+ FPS", flush=True)
     if enable_debug:
         print("Debug Mode: ENABLED", flush=True)
+    if performance_mode:
+        print("Performance Mode: ENABLED - Reduced token processing", flush=True)
     print("Press Ctrl+C to exit", flush=True)
     print("", flush=True)  # Add spacing
 
@@ -5065,7 +4771,7 @@ def run_animation_loop(enable_debug: bool = False) -> None:
     try:
         # Initialize token cache and perform all preprocessing once
         print("Initializing token cache and preprocessing pipeline...", flush=True)
-        token_cache, base_torus_points = initialize_token_cache(torus_params)
+        token_cache, base_torus_points = initialize_token_cache(torus_params, performance_mode)
 
         # Get preprocessed data from cache
         enhanced_tokens = token_cache.get_enhanced_tokens()
@@ -5079,10 +4785,13 @@ def run_animation_loop(enable_debug: bool = False) -> None:
         print(f"Memory usage: ~{token_cache.memory_usage() / 1024:.1f} KB", flush=True)
         print("Performance optimization: All token processing moved to initialization", flush=True)
 
-        # Display debug information once at startup if enabled
-        if enable_debug:
-            debug_structural_analysis(structural_info, enhanced_tokens, enable_debug)
-            debug_nested_structures(structural_info, enable_debug)
+        # Display debug information once at startup if enabled (skip in performance mode)
+        if enable_debug and not performance_mode:
+            try:
+                debug_structural_analysis(structural_info, enhanced_tokens, enable_debug)
+                debug_nested_structures(structural_info, enable_debug)
+            except UnicodeEncodeError:
+                print("Debug output skipped due to Unicode encoding issue", flush=True)
 
     except Exception as e:
         print(f"Error in initialization phase: {e}", flush=True)
@@ -5149,8 +4858,7 @@ def run_animation_loop(enable_debug: bool = False) -> None:
             total_elapsed += frame_elapsed
 
             # Performance and memory tracking (Story 4.1 Task 2)
-            _performance_stats['frame_times'].append(frame_elapsed)
-            _performance_stats['total_frames'] += 1
+            record_frame_time(frame_elapsed)
             performance_samples.append(frame_elapsed)
             if len(performance_samples) > 30:  # Keep last 30 samples
                 performance_samples.pop(0)
@@ -5224,7 +4932,8 @@ def run_animation_loop(enable_debug: bool = False) -> None:
 
             # Display performance metrics periodically (Story 3.4 Task 4)
             if frame_count % 100 == 0 and frame_count > 0:
-                cache_hit_rate = (_performance_stats['cache_hits'] / (_performance_stats['cache_hits'] + _performance_stats['cache_misses'])) * 100 if (_performance_stats['cache_hits'] + _performance_stats['cache_misses']) > 0 else 0
+                perf_stats = get_performance_stats()
+                cache_hit_rate = (perf_stats['cache_hits'] / (perf_stats['cache_hits'] + perf_stats['cache_misses'])) * 100 if (perf_stats['cache_hits'] + perf_stats['cache_misses']) > 0 else 0
                 print(f"\rFPS: {current_fps:.1f} | Frame: {frame_count} | Mode: {'Degraded' if degraded_mode else 'Normal'} | Cache: {cache_hit_rate:.0f}%     ", end='', flush=True)
 
                 # Detailed performance report every 500 frames
@@ -5267,7 +4976,7 @@ def run_animation_loop(enable_debug: bool = False) -> None:
                 # Validate cache integrity
                 if not token_cache.cache_valid:
                     print("\nCache invalidated - reinitializing...", flush=True)
-                    token_cache, base_torus_points = initialize_token_cache(torus_params)
+                    token_cache, base_torus_points = initialize_token_cache(torus_params, performance_mode)
                     enhanced_tokens = token_cache.get_enhanced_tokens()
                     structural_info = token_cache.structural_info
                     token_point_indices = token_cache.get_token_mappings()
@@ -5305,6 +5014,7 @@ def main() -> None:
     try:
         # Parse command line arguments
         enable_debug = '--debug' in sys.argv or '-d' in sys.argv
+        performance_mode = '--performance' in sys.argv or '-p' in sys.argv
 
         # Validate Python version
         if sys.version_info < (3, 8):
@@ -5319,8 +5029,8 @@ def main() -> None:
             print("Warning: Self-code reading not available in interactive mode.")
             print("Solution: Run script directly: python rotating_donut.py")
 
-        # Start animation with debug mode
-        run_animation_loop(enable_debug=enable_debug)
+        # Start animation with debug and performance modes
+        run_animation_loop(enable_debug=enable_debug, performance_mode=performance_mode)
 
     except Exception as e:
         print(f"Error: {e}")
