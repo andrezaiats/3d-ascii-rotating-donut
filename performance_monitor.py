@@ -9,6 +9,7 @@ Python Version: 3.8+
 """
 
 import time
+import functools
 from typing import Dict, List, Any
 
 
@@ -30,6 +31,7 @@ def performance_monitor(func_name: str):
         func_name: Name of the function for performance tracking
     """
     def decorator(func):
+        @functools.wraps(func)  # Preserve original function's metadata (docstring, name, etc.)
         def wrapper(*args, **kwargs):
             start_time = time.time()
             result = func(*args, **kwargs)

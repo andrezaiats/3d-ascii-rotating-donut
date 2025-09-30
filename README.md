@@ -89,8 +89,8 @@ No `pip install` required!
 
 ```bash
 # Clone or download the repository
-git clone https://github.com/yourusername/3d-ascii-donut.git
-cd 3d-ascii-donut
+git clone https://github.com/andrezaiats/3d-ascii-rotating-donut.git
+cd 3d-ascii-rotating-donut
 
 # That's it! No dependencies to install.
 ```
