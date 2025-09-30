@@ -11,3 +11,6 @@
 
 ## Epic 4: Performance & Polish
 **Goal:** Optimize animation performance, enhance visual quality, and ensure cross-platform compatibility for production release.
+
+## Epic 5: Code Maintainability - File Size Refactoring
+**Goal:** Refactor rotating_donut.py into maintainable modular architecture to comply with project guidelines and reduce technical debt.
