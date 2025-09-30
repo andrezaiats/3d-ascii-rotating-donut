@@ -4,7 +4,7 @@
 
 A self-referential ASCII art animation that reads its own source code, tokenizes it into semantic elements, and displays these tokens on a rotating 3D donut shape in your terminal. This project combines mathematical visualization, 3D graphics, code parsing, and terminal animation into a unique educational showcase.
 
-![Animation Preview](docs/examples/screenshot.txt)
+![Animation Preview](docs/examples/animation.gif)
 
 ## Table of Contents
 
