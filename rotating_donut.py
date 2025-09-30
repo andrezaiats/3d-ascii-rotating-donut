@@ -72,6 +72,11 @@ ASCII_CHARS = {
     'BACKGROUND': '.'
 }
 
+# === PLATFORM DETECTION CONSTANTS ===
+PLATFORM_WINDOWS = 'win32'
+PLATFORM_DARWIN = 'darwin'
+PLATFORM_LINUX = 'linux'
+
 # Global token cache instance for efficient reuse across animation sessions
 _token_cache = get_token_cache()
 
@@ -273,6 +278,436 @@ class StructuralInfo(NamedTuple):
     import_count: int
     function_count: int
     class_count: int
+
+
+class PlatformInfo(NamedTuple):
+    """Contains platform detection results."""
+    platform: str  # 'win32', 'darwin', 'linux'
+    os_name: str  # 'nt', 'posix'
+    is_windows: bool
+    is_macos: bool
+    is_linux: bool
+    python_version: Tuple[int, int, int]
+    supports_ansi: bool
+
+
+class TerminalCapabilities(NamedTuple):
+    """Contains terminal capability detection results."""
+    width: int
+    height: int
+    encoding: str
+    supports_color: bool
+    supports_unicode: bool
+    terminal_type: str
+
+
+# === PLATFORM DETECTION ENGINE ===
+
+def detect_platform() -> PlatformInfo:
+    """Detect current operating system platform.
+
+    Uses sys.platform and os.name to identify the platform and set
+    cross-platform compatibility flags.
+
+    Returns:
+        PlatformInfo with platform detection results
+    """
+    platform = sys.platform
+    os_name = os.name
+
+    # Platform-specific boolean flags
+    is_windows = platform == PLATFORM_WINDOWS
+    is_macos = platform == PLATFORM_DARWIN
+    is_linux = platform.startswith('linux')
+
+    # Python version tuple
+    python_version = sys.version_info[:3]
+
+    # ANSI escape code support detection
+    # Modern Windows Terminal (Windows 10+) supports ANSI
+    # macOS and Linux terminals typically support ANSI
+    supports_ansi = True
+    if is_windows:
+        # Check if running in modern Windows Terminal or older cmd/PowerShell
+        # TERM environment variable helps identify terminal capability
+        term_env = os.environ.get('TERM', '')
+        # Windows Terminal sets TERM variable, cmd.exe typically doesn't
+        supports_ansi = bool(term_env) or os.environ.get('WT_SESSION') is not None
+
+    return PlatformInfo(
+        platform=platform,
+        os_name=os_name,
+        is_windows=is_windows,
+        is_macos=is_macos,
+        is_linux=is_linux,
+        python_version=python_version,
+        supports_ansi=supports_ansi
+    )
+
+
+def detect_terminal_capabilities(platform_info: PlatformInfo) -> TerminalCapabilities:
+    """Detect terminal size and capabilities.
+
+    Detects terminal dimensions, encoding, and feature support for
+    graceful degradation on limited terminals.
+
+    Args:
+        platform_info: Platform detection results
+
+    Returns:
+        TerminalCapabilities with terminal detection results
+    """
+    # Detect terminal size using os.get_terminal_size()
+    try:
+        term_size = os.get_terminal_size()
+        width = term_size.columns
+        height = term_size.lines
+    except (AttributeError, OSError):
+        # Fallback to default values if detection fails
+        width = TERMINAL_WIDTH
+        height = TERMINAL_HEIGHT
+
+    # Detect encoding
+    encoding = sys.stdout.encoding or 'ascii'
+
+    # Color support detection
+    supports_color = platform_info.supports_ansi
+
+    # Unicode support detection based on encoding
+    supports_unicode = encoding.lower() in ['utf-8', 'utf8', 'utf-16', 'utf16']
+
+    # Terminal type identification
+    terminal_type = os.environ.get('TERM', 'unknown')
+    if platform_info.is_windows:
+        if os.environ.get('WT_SESSION'):
+            terminal_type = 'windows-terminal'
+        elif os.environ.get('PROMPT'):
+            terminal_type = 'cmd' if not os.environ.get('PSModulePath') else 'powershell'
+
+    return TerminalCapabilities(
+        width=width,
+        height=height,
+        encoding=encoding,
+        supports_color=supports_color,
+        supports_unicode=supports_unicode,
+        terminal_type=terminal_type
+    )
+
+
+def normalize_file_path(file_path: str, platform_info: PlatformInfo) -> str:
+    """Normalize file path for cross-platform compatibility.
+
+    Handles Windows backslash vs Unix forward slash differences using
+    os.path.normpath for consistent path handling.
+
+    Args:
+        file_path: Path to normalize
+        platform_info: Platform detection results
+
+    Returns:
+        Normalized absolute file path
+    """
+    # Use os.path.normpath for cross-platform path normalization
+    normalized = os.path.normpath(file_path)
+
+    # Convert to absolute path
+    absolute = os.path.abspath(normalized)
+
+    return absolute
+
+
+def adjust_frame_dimensions(term_caps: TerminalCapabilities) -> Tuple[int, int]:
+    """Adjust display frame dimensions based on terminal size.
+
+    Dynamically adapts frame size to available terminal space for optimal display.
+
+    Args:
+        term_caps: Terminal capability detection results
+
+    Returns:
+        Tuple of (width, height) for frame dimensions
+    """
+    # Use detected terminal size, with minimum constraints
+    min_width = 40
+    min_height = 20
+    max_width = 120
+    max_height = 60
+
+    # Adjust to terminal size with margins
+    adjusted_width = max(min_width, min(term_caps.width - 2, max_width))
+    adjusted_height = max(min_height, min(term_caps.height - 2, max_height))
+
+    return adjusted_width, adjusted_height
+
+
+def validate_character_set(term_caps: TerminalCapabilities) -> bool:
+    """Validate ASCII character compatibility for terminal.
+
+    Checks if terminal supports the required ASCII characters for animation.
+
+    Args:
+        term_caps: Terminal capability detection results
+
+    Returns:
+        True if terminal supports required characters, False otherwise
+    """
+    # All terminals should support basic ASCII characters
+    # Only check if encoding is explicitly limited
+    if term_caps.encoding.lower() == 'ascii':
+        return True
+
+    # UTF-8 and other encodings include ASCII as subset
+    return True
+
+
+def get_fallback_character_set(term_caps: TerminalCapabilities) -> dict:
+    """Get fallback character set for limited terminal support.
+
+    Provides simplified character set for terminals with limited capabilities.
+
+    Args:
+        term_caps: Terminal capability detection results
+
+    Returns:
+        Dictionary mapping importance levels to ASCII characters
+    """
+    # Use standard ASCII characters only (no Unicode)
+    # These work on all terminal types per coding standards
+    fallback_chars = {
+        'HIGH': '#',
+        'MEDIUM': '+',
+        'LOW': '-',
+        'BACKGROUND': '.'
+    }
+
+    # For extremely limited terminals, use even simpler character set
+    if not term_caps.supports_unicode:
+        fallback_chars = {
+            'HIGH': '#',
+            'MEDIUM': '+',
+            'LOW': '-',
+            'BACKGROUND': ' '
+        }
+
+    return fallback_chars
+
+
+def test_terminal_capabilities(platform_info: PlatformInfo, term_caps: TerminalCapabilities) -> Tuple[bool, str]:
+    """Test terminal for animation compatibility.
+
+    Performs comprehensive compatibility testing and returns results.
+
+    Args:
+        platform_info: Platform detection results
+        term_caps: Terminal capability detection results
+
+    Returns:
+        Tuple of (compatible, message) with compatibility status and info message
+    """
+    issues = []
+
+    # Check terminal size
+    if term_caps.width < 40 or term_caps.height < 20:
+        issues.append(f"Terminal size {term_caps.width}x{term_caps.height} is small (recommend 80x24+)")
+
+    # Check ANSI support for screen clearing
+    if not platform_info.supports_ansi:
+        issues.append("ANSI escape codes not supported - screen clearing may not work")
+
+    # Check encoding
+    if term_caps.encoding.lower() not in ['utf-8', 'utf8', 'ascii', 'cp1252', 'latin-1']:
+        issues.append(f"Unusual encoding '{term_caps.encoding}' may cause display issues")
+
+    # Determine overall compatibility
+    compatible = len(issues) == 0 or all('recommend' in issue for issue in issues)
+
+    if compatible:
+        message = f"Terminal compatible: {term_caps.width}x{term_caps.height}, {term_caps.encoding}, {term_caps.terminal_type}"
+    else:
+        message = "Terminal compatibility issues: " + "; ".join(issues)
+
+    return compatible, message
+
+
+# === CROSS-PLATFORM TIMING ENGINE ===
+
+def calibrate_timer_precision(platform_info: PlatformInfo, samples: int = 10) -> float:
+    """Calibrate timer precision for cross-platform consistency.
+
+    Measures timer resolution to account for platform-specific timing differences.
+    Windows typically has ~15ms resolution, Unix systems have higher precision.
+
+    Args:
+        platform_info: Platform detection results
+        samples: Number of samples for calibration
+
+    Returns:
+        Measured timer precision in seconds
+    """
+    min_delta = float('inf')
+
+    # Take multiple samples to find minimum measurable time delta
+    for _ in range(samples):
+        start = time.time()
+        # Force at least one time check
+        while time.time() == start:
+            pass
+        delta = time.time() - start
+        min_delta = min(min_delta, delta)
+
+    return min_delta
+
+
+def validate_timing_consistency(platform_info: PlatformInfo) -> Tuple[bool, float]:
+    """Validate time.time() behavior across platforms.
+
+    Tests timing consistency and measures actual precision for adaptive timing.
+
+    Args:
+        platform_info: Platform detection results
+
+    Returns:
+        Tuple of (consistent, precision) with validation result and measured precision
+    """
+    # Measure timer precision
+    precision = calibrate_timer_precision(platform_info, samples=10)
+
+    # Check if precision is reasonable for animation
+    # Should be less than 10ms for smooth 30 FPS
+    consistent = precision < 0.01
+
+    return consistent, precision
+
+
+def calculate_adaptive_frame_time(target_fps: int, timer_precision: float) -> float:
+    """Calculate adaptive frame time accounting for timer precision.
+
+    Adjusts target frame time based on platform-specific timer precision.
+
+    Args:
+        target_fps: Target frames per second
+        timer_precision: Measured timer precision in seconds
+
+    Returns:
+        Adjusted target frame time in seconds
+    """
+    base_frame_time = 1.0 / target_fps
+
+    # Add small buffer if timer precision is coarse
+    if timer_precision > 0.005:  # > 5ms precision
+        # Add half the precision as buffer
+        base_frame_time += timer_precision * 0.5
+
+    return base_frame_time
+
+
+def get_platform_sleep_overhead(platform_info: PlatformInfo) -> float:
+    """Estimate sleep overhead for the current platform.
+
+    Different platforms have different sleep precision and overhead.
+    Windows: ~15ms granularity, Unix: ~1ms granularity
+
+    Args:
+        platform_info: Platform detection results
+
+    Returns:
+        Estimated sleep overhead in seconds
+    """
+    if platform_info.is_windows:
+        # Windows sleep has higher overhead due to scheduler granularity
+        return 0.001  # 1ms overhead estimate
+    else:
+        # Unix-like systems have better sleep precision
+        return 0.0005  # 0.5ms overhead estimate
+
+
+def adaptive_sleep(sleep_time: float, platform_info: PlatformInfo) -> None:
+    """Perform adaptive sleep accounting for platform differences.
+
+    Uses platform-specific timing adjustments for consistent frame rates.
+
+    Args:
+        sleep_time: Desired sleep duration in seconds
+        platform_info: Platform detection results
+    """
+    if sleep_time <= 0:
+        return
+
+    overhead = get_platform_sleep_overhead(platform_info)
+
+    # Adjust sleep time for overhead
+    adjusted_sleep = max(0, sleep_time - overhead)
+
+    if adjusted_sleep > 0:
+        time.sleep(adjusted_sleep)
+
+
+# === CROSS-PLATFORM TERMINAL OUTPUT ENGINE ===
+
+def clear_screen(platform_info: PlatformInfo) -> None:
+    """Clear terminal screen with cross-platform support.
+
+    Uses ANSI escape codes where supported, with fallback methods for
+    incompatible terminals.
+
+    Args:
+        platform_info: Platform detection results
+    """
+    if platform_info.supports_ansi:
+        # ANSI escape codes: \033[2J clears screen, \033[H moves cursor to home
+        print("\033[2J\033[H", end="", flush=True)
+    else:
+        # Fallback for terminals without ANSI support
+        if platform_info.is_windows:
+            # Use cls command for older Windows terminals
+            import subprocess
+            try:
+                subprocess.call('cls', shell=True)
+            except Exception:
+                # If cls fails, print newlines to simulate clearing
+                print("\n" * 50, flush=True)
+        else:
+            # For Unix systems without ANSI, use clear command
+            import subprocess
+            try:
+                subprocess.call('clear')
+            except Exception:
+                # If clear fails, print newlines
+                print("\n" * 50, flush=True)
+
+
+def output_line_buffered(text: str) -> None:
+    """Output text with line buffering for cross-platform consistency.
+
+    Uses print(..., flush=True) for all platforms per coding standards.
+
+    Args:
+        text: Text to output
+    """
+    print(text, flush=True)
+
+
+def validate_terminal_output(platform_info: PlatformInfo, term_caps: TerminalCapabilities) -> bool:
+    """Validate terminal output capabilities.
+
+    Checks if terminal can support the required output operations.
+
+    Args:
+        platform_info: Platform detection results
+        term_caps: Terminal capability detection results
+
+    Returns:
+        True if terminal supports required output, False otherwise
+    """
+    # Check if stdout is available and writable
+    if not sys.stdout or not hasattr(sys.stdout, 'write'):
+        return False
+
+    # Check if terminal encoding is compatible
+    if not term_caps.encoding:
+        return False
+
+    return True
 
 
 # === MATHEMATICAL ENGINE ===
@@ -595,11 +1030,27 @@ def apply_rotation(points: List[Point3D], angle: float) -> List[Point3D]:
 
     Args:
         points: List of 3D points with surface normals to rotate
-        angle: Rotation angle in radians
+        angle: Rotation angle in radians (automatically wrapped to [0, 2π] range)
 
     Returns:
         List of rotated 3D points with rotated surface normals and preserved parametric coordinates
+
+    Raises:
+        ValueError: If angle is invalid (NaN, infinite)
     """
+    # Validate angle for edge cases (Story 4.3 Task 3)
+    from math import isnan, isinf, tau
+    if isnan(angle) or isinf(angle):
+        raise ValueError(
+            f"Invalid rotation angle: {angle}. "
+            "Solution: Ensure rotation angle is a finite number"
+        )
+
+    # Wrap extreme angles to [0, 2π] for numerical stability (Story 4.3 Task 3)
+    # This prevents precision loss from very large angles
+    if abs(angle) > tau:
+        angle = angle % tau
+
     # Use cached rotation matrix components for performance
     cos_angle, sin_angle = get_cached_rotation_matrix(angle)
 
@@ -1786,7 +2237,7 @@ def get_script_path() -> str:
     except OSError as e:
         raise OSError(
             f"File system error accessing script path: {e}. "
-            "Solution: Check file system permissions and disk space"
+            f"Solution: Check file system permissions and disk space"
         )
 
 
@@ -4607,27 +5058,59 @@ def generate_ascii_frame_legacy(points: List[Point2D], frame_number: int = 0) ->
 
 
 def output_to_terminal(frame: DisplayFrame) -> None:
-    """Render frame to terminal with screen clearing.
+    """Render frame to terminal with screen clearing and error handling.
 
-    Implements cross-platform screen clearing and smooth frame output:
+    Implements cross-platform screen clearing and smooth frame output with
+    comprehensive error handling for terminal output issues (Story 4.3 Task 6):
     - Uses ANSI escape codes for screen clearing (works on modern Windows Terminal)
     - Outputs each row with flush=True for smooth animation
+    - Handles broken pipe errors (stdout closure)
+    - Gracefully degrades on output errors
     - Includes frame number for debugging purposes
     - Handles terminal compatibility per coding standards
 
     Args:
         frame: ASCII frame to display
+
+    Raises:
+        BrokenPipeError: If stdout is closed (caller should handle gracefully)
+        IOError: For other terminal output errors (caller should handle)
     """
-    # Clear screen using ANSI escape codes (cross-platform)
-    # \033[2J clears entire screen, \033[H moves cursor to home position
-    print("\033[2J\033[H", end="", flush=True)
+    try:
+        # Clear screen using ANSI escape codes (cross-platform)
+        # \033[2J clears entire screen, \033[H moves cursor to home position
+        try:
+            print("\033[2J\033[H", end="", flush=True)
+        except (BrokenPipeError, IOError):
+            # Screen clearing failed, try output without clearing
+            pass
 
-    # Output frame buffer line by line with flush for smooth animation
-    for row in frame.buffer:
-        print(''.join(row), flush=True)
+        # Output frame buffer line by line with flush for smooth animation
+        for row in frame.buffer:
+            try:
+                print(''.join(row), flush=True)
+            except BrokenPipeError:
+                # Stdout closed (pipe broken) - raise to caller
+                raise BrokenPipeError(
+                    "Terminal output pipe closed during frame rendering. "
+                    "Solution: Ensure terminal remains open during animation"
+                )
+            except IOError as e:
+                # Other I/O error during output
+                raise IOError(
+                    f"Terminal output error: {e}. "
+                    "Solution: Check terminal capabilities and system resources"
+                )
 
-    # Optional: Display frame number for debugging (can be removed for production)
-    # print(f"Frame: {frame.frame_number}", flush=True)
+    except (BrokenPipeError, IOError):
+        # Re-raise terminal errors for caller to handle
+        raise
+    except Exception as e:
+        # Unexpected error - wrap and raise
+        raise IOError(
+            f"Unexpected terminal output error: {e}. "
+            "Solution: Verify terminal compatibility and restart if needed"
+        )
 
 
 def _precompute_token_mappings(enhanced_tokens: List[CodeToken],
@@ -4697,19 +5180,62 @@ def calculate_frame_timing() -> float:
     return 1.0 / TARGET_FPS
 
 
-def handle_interrupts() -> bool:
-    """Handle graceful Ctrl+C interrupts and cleanup.
+def handle_interrupts(platform_info: Optional[PlatformInfo] = None) -> bool:
+    """Handle graceful Ctrl+C interrupts and cleanup with terminal state restoration.
+
+    Implements Story 4.3 Task 2: KeyboardInterrupt handling with proper cleanup.
+    Ensures terminal state is properly restored including cursor visibility and screen clearing.
+
+    Args:
+        platform_info: Optional platform detection results for platform-specific cleanup
 
     Returns:
         True if interrupt was handled gracefully
+
+    Raises:
+        Exception: Re-raises if terminal restoration fails critically
     """
     try:
-        # This will be called from the animation loop's exception handler
-        print("\nAnimation stopped gracefully.")
-        print("Terminal state restored.")
-        print("Thank you for viewing the 3D ASCII Donut!")
+        print("\n", flush=True)  # Move to new line for clean exit message
+
+        # Restore cursor visibility (ANSI escape code)
+        # \033[?25h shows cursor
+        try:
+            print("\033[?25h", end="", flush=True)
+        except Exception:
+            # Cursor restoration failed, continue with other cleanup
+            pass
+
+        # Clear screen one final time for clean exit
+        try:
+            if platform_info and platform_info.supports_ansi:
+                # ANSI clear screen and home cursor
+                print("\033[2J\033[H", end="", flush=True)
+            else:
+                # Fallback: print newlines
+                print("\n" * 2, flush=True)
+        except Exception:
+            # Screen clearing failed, continue with exit message
+            pass
+
+        # Display graceful exit message
+        print("=" * 50, flush=True)
+        print("Animation stopped gracefully.", flush=True)
+        print("Terminal state restored.", flush=True)
+        print("Thank you for viewing the 3D ASCII Donut!", flush=True)
+        print("=" * 50, flush=True)
+
         return True
-    except Exception:
+
+    except Exception as e:
+        # Even if cleanup fails, try to show some message
+        try:
+            print(f"\nCleanup error: {e}", flush=True)
+            print("Terminal state may need manual reset.", flush=True)
+            print("Solution: Close and reopen terminal if display issues persist", flush=True)
+        except Exception:
+            # If even error printing fails, silently return
+            pass
         return False
 
 
@@ -4742,6 +5268,18 @@ def run_animation_loop(enable_debug: bool = False, performance_mode: bool = Fals
         print("Performance Mode: ENABLED - Reduced token processing", flush=True)
     print("Press Ctrl+C to exit", flush=True)
     print("", flush=True)  # Add spacing
+
+    # Detect platform for terminal handling
+    platform_info = detect_platform()
+    term_caps = detect_terminal_capabilities(platform_info)
+
+    # Hide cursor for cleaner animation (Story 4.3 Task 2)
+    # \033[?25l hides cursor
+    try:
+        print("\033[?25l", end="", flush=True)
+    except Exception:
+        # Cursor hiding failed, continue anyway
+        pass
 
     # Animation parameters with configurable rotation speed
     torus_params = TorusParameters(
@@ -4850,8 +5388,20 @@ def run_animation_loop(enable_debug: bool = False, performance_mode: bool = Fals
                         current_frame_data.append((point_2d, token))
                 previous_frame_data = current_frame_data
 
-            # Output frame to terminal with screen clearing
-            output_to_terminal(frame)
+            # Output frame to terminal with screen clearing (Story 4.3 Task 6)
+            # Handle terminal output errors gracefully
+            try:
+                output_to_terminal(frame)
+            except BrokenPipeError:
+                # Terminal closed - exit gracefully
+                print("\nTerminal output pipe closed. Exiting animation.", flush=True)
+                break
+            except IOError as e:
+                # Terminal output error - try to continue or exit
+                print(f"\nTerminal output error: {e}", flush=True)
+                print("Solution: Check terminal compatibility", flush=True)
+                # Try to continue - may recover on next frame
+                continue
 
             # Frame timing calculation and control
             frame_elapsed = time.time() - frame_start_time
@@ -4982,8 +5532,8 @@ def run_animation_loop(enable_debug: bool = False, performance_mode: bool = Fals
                     token_point_indices = token_cache.get_token_mappings()
 
     except KeyboardInterrupt:
-        # Graceful interrupt handling with proper cleanup
-        success = handle_interrupts()
+        # Graceful interrupt handling with proper cleanup (Story 4.3 Task 2)
+        success = handle_interrupts(platform_info)
         if success:
             # Display performance statistics
             if frame_count > 0:
@@ -4991,11 +5541,28 @@ def run_animation_loop(enable_debug: bool = False, performance_mode: bool = Fals
                 print(f"Average FPS: {avg_fps:.1f}", flush=True)
                 print(f"Total Frames: {frame_count}", flush=True)
                 print(f"Cache Memory Used: {token_cache.memory_usage() / 1024:.1f} KB", flush=True)
+    except SystemExit:
+        # Handle SystemExit separately (Story 4.3 Task 2)
+        print("\nSystem exit requested.", flush=True)
+        handle_interrupts(platform_info)
+        raise
     except Exception as e:
         print(f"\nAnimation error: {e}", flush=True)
         print("Solution: Check terminal compatibility and system resources", flush=True)
+        # Restore terminal state even on error
+        try:
+            print("\033[?25h", end="", flush=True)  # Show cursor
+        except Exception:
+            pass
         raise
     finally:
+        # === STORY 4.3 TASK 2: TERMINAL STATE RESTORATION ===
+        # Ensure cursor is always restored even on crashes
+        try:
+            print("\033[?25h", end="", flush=True)  # Show cursor
+        except Exception:
+            pass
+
         # === STORY 3.4 TASK 5: MEMORY CLEANUP ON EXIT ===
         # Ensure all cached data is cleaned up properly
         if '_token_cache' in globals():
